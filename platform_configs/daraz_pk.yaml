@@ -107,7 +107,7 @@ supplier_sources:
 special_notes:
   - "Daraz Mall sellers have search visibility advantage over regular sellers — price competitiveness matters more for regular sellers"
   - "VAT rate is province-dependent — always confirm seller's province before calculating margin"
-  - "Handling fee is TIERED not flat — never assume single amount. Tiers vary by selling price tier. Never hardcode PKR 49."
+  - "Handling fee is TIERED not flat — agent must use the tier structure defined in fee_categories above. PKR 10, 15, 20, or 60 depending on selling price range. Never assume one flat amount."
   - "FBD fees apply ONLY when business_model is fbm — dropshipping and FBS don't use FBD"
   - "11.11 Single's Day sale in November and Mega sale in March are peak seasons — build reviews and inventory beforehand"
   - "Flash sales on Daraz typically run 3-4 days — plan inventory buffer for surge demand"
