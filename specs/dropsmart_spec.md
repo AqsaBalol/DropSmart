@@ -109,10 +109,16 @@ constraint — not a preference.
 
 | Marketplace | Region | Currency | Dropshipping | FBS | FBM / FBA |
 |---|---|---|---|---|---|
-| Daraz | Pakistan | PKR | Yes | Yes | No |
+| Daraz | Pakistan | PKR | Yes | Yes | Yes (FBD) |
 | Walmart | USA | USD | Yes | Yes | Yes |
 | Amazon | USA | USD | Yes | Yes | Yes (FBA) |
-| Etsy | USA | USD | Yes | Yes | No |
+| Etsy | USA | USD | Yes | Yes | No ¹ |
+
+¹ Etsy has no in-house fulfillment. Sellers use FBS or third-party 3PL only.
+
+**FBD (Fulfilled by Daraz):** Daraz's own fulfillment program. Seller sends bulk stock to
+Daraz warehouse. Daraz handles storage, packing, and shipping. First 30 days storage is free.
+Additional FBD fees apply on top of standard commission and VAT fees.
 
 ### Business Model Definitions
 
