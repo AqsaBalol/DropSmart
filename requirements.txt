@@ -1,0 +1,17 @@
+# Google ADK (Agent Development Kit) — framework for building multi-agent systems with Gemini
+google-adk
+
+# MCP (Model Context Protocol) — standard for tool integration between AI models and external services
+mcp
+
+# Pydantic — data validation and type checking for Python
+pydantic>=2.0
+
+# python-dotenv — load environment variables from .env files
+python-dotenv
+
+# PyYAML — parse and load YAML configuration files (platform configs)
+pyyaml
+
+# requests — HTTP client library for making web requests (used by MCP server)
+requests
