@@ -1,0 +1,113 @@
+# Daraz Pakistan Platform Configuration
+# Used by: Competitor Agent, Fee Agent, Report Agent, Margin Calculator Agent
+# This config defines all fees, marketplace rules, and constraints for Daraz Pakistan sellers
+
+marketplace_name: "Daraz Pakistan"
+marketplace_id: "daraz_pk"
+region: "PK"
+currency: "PKR"
+
+# Business models supported on this platform
+# Used by: Orchestrator Agent (validates user input)
+supported_business_models:
+  - dropshipping  # Supplier ships directly to customer
+  - fbs           # Seller holds inventory
+  - fbm           # Fulfilled by Daraz (FBD) — Daraz warehouse handles fulfillment
+
+# Fee categories the Fee Agent must search for
+# Each fee here is REQUIRED to appear in final output before Margin Calculator runs
+# Used by: Fee Agent (search queries), Margin Calculator Agent (line-by-line breakdown)
+fee_categories:
+  # Standard fees — apply to all business models (dropshipping, fbs, fbm)
+  - name: "Commission Rate"
+    type: "percentage"
+    applies_to: "selling_price"
+    note: "Varies by product category. Ranges from 3% to 25%. Agent must search current rate for the specific category being researched."
+
+  - name: "VAT on Commission"
+    type: "percentage"
+    applies_to: "commission_amount"
+    note: "Province-dependent: Punjab = 16%, Sindh/KPK/Balochistan = 15%. Fee Agent must either ask seller their province OR default to 15% with a warning that Punjab sellers should use 16%."
+
+  - name: "Payment Processing Fee"
+    type: "percentage"
+    applies_to: "selling_price"
+    note: "Currently approximately 2.25% but can vary. Agent MUST verify current rate from Daraz Seller Center. Never hardcode 2.25%."
+
+  - name: "VAT on Payment Processing Fee"
+    type: "percentage"
+    applies_to: "payment_processing_amount"
+    note: "Same as VAT on Commission. Province-dependent: Punjab = 16%, others = 15%."
+
+  - name: "Handling Fee"
+    type: "tiered"
+    applies_to: "per_order"
+    tiers:
+      - range: "PKR 0-500"
+        fee: 10
+      - range: "PKR 501-1000"
+        fee: 15
+      - range: "PKR 1001-2000"
+        fee: 20
+      - range: "PKR 2001+"
+        fee: 60
+    note: "CRITICAL: This is TIERED not flat. Margin Calculator Agent must select the correct tier based on the product's selling price. Never assume a single flat amount. Agent must verify current tier structure from Daraz Seller Center — tiers may change."
+
+  - name: "VAT on Handling Fee"
+    type: "percentage"
+    applies_to: "handling_fee_amount"
+    note: "Same as other VAT fees. Province-dependent: Punjab = 16%, others = 15%."
+
+  # FBD-specific fees — only apply when business_model is fbm
+  - name: "FBD Storage Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "First 30 days storage is FREE. After 30 days, charged per cubic meter per day. Fee Agent must search current daily rate from Daraz Seller Center. This is a storage cost, not fulfilled-unit cost — impacts inventory planning significantly."
+
+  - name: "FBD Fulfillment Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "Charged per unit fulfilled by Daraz. Varies by product category and weight. Fee Agent must search current rate from Daraz Seller Center. Only applies when business_model is fbm."
+
+# Search query templates for Fee Agent
+# Fee Agent will substitute {product_category} at runtime with the actual category
+# Multiple queries ensure multi-source verification per spec
+# Used by: Fee Agent (searching for fees, multi-source verification)
+fee_search_queries:
+  - "Daraz Pakistan seller commission fees 2026 {product_category}"
+  - "Daraz seller center fee structure Pakistan 2026"
+  - "site:seller.daraz.pk fees commission rates"
+  - "Daraz Pakistan VAT on commission handling fee 2026"
+  - "Daraz FBD fulfilled by daraz charges fees 2026"
+
+# Listing constraints for the Report Agent
+# Margin Calculator uses these to format output
+# Report Agent uses these to generate marketplace-optimized listing draft
+# Used by: Report Agent (generates title and description within these limits)
+listing_constraints:
+  title_max_chars: 255
+  bullet_count: 5
+  description_max_chars: 5000
+  title_style: "keyword-dense"
+  note: "Include high-volume Urdu and English keywords. Daraz Mall sellers have search visibility advantage. New sellers must compete on price, reviews, or unique value."
+
+# Supplier source hints for the Supplier Agent
+# These guide search query construction — not hardcoded supplier lists
+# Used by: Supplier Agent (search query templates)
+supplier_sources:
+  - "Alibaba"
+  - "AliExpress"
+  - "CJDropshipping"
+  - "Local Pakistan wholesale markets"
+  - "Hafeez Centre Lahore for electronics"
+
+# Special notes and rules specific to Daraz Pakistan
+# Used by: Risk Assessor Agent (assess seasonality, market factors)
+# Used by: Report Agent (recommendations section)
+special_notes:
+  - "Daraz Mall sellers have search visibility advantage over regular sellers — price competitiveness matters more for regular sellers"
+  - "VAT rate is province-dependent — always confirm seller's province before calculating margin"
+  - "Handling fee is TIERED not flat — never assume single amount. Tiers vary by selling price tier. Never hardcode PKR 49."
+  - "FBD fees apply ONLY when business_model is fbm — dropshipping and FBS don't use FBD"
+  - "11.11 Single's Day sale in November and Mega sale in March are peak seasons — build reviews and inventory beforehand"
+  - "Flash sales on Daraz typically run 3-4 days — plan inventory buffer for surge demand"

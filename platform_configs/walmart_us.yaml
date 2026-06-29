@@ -1,0 +1,78 @@
+# Walmart USA Platform Configuration
+# Used by: Competitor Agent, Fee Agent, Report Agent, Margin Calculator Agent
+# This config defines all fees, marketplace rules, and constraints for Walmart USA sellers
+
+marketplace_name: "Walmart USA"
+marketplace_id: "walmart_us"
+region: "US"
+currency: "USD"
+
+# Business models supported on this platform
+# Used by: Orchestrator Agent (validates user input)
+supported_business_models:
+  - dropshipping  # Supplier ships directly to customer
+  - fbs           # Seller holds inventory and ships
+  - fbm           # Walmart Fulfillment Services (WFS) — Walmart warehouse handles fulfillment
+
+# Fee categories the Fee Agent must search for
+# Each fee here is REQUIRED to appear in final output before Margin Calculator runs
+# Used by: Fee Agent (search queries), Margin Calculator Agent (line-by-line breakdown)
+fee_categories:
+  # Standard fees — apply to all business models
+  - name: "Referral Fee"
+    type: "percentage"
+    applies_to: "total_sale_price"
+    note: "Varies significantly by product category. Range: 6% to 20%. Most categories are 15%. There is NO separate payment processing fee — referral fee covers all Walmart transaction costs. Agent MUST search current rate for the specific product category. Never assume 15% without verification."
+
+  # WFS-specific fees — only apply when business_model is fbm
+  - name: "WFS Fulfillment Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "Charged per unit fulfilled by Walmart. Starts at $3.45 for standard size. Varies by product dimensions and weight. Fee Agent must search current WFS fulfillment rate. Only applies when business_model is fbm."
+
+  - name: "WFS Storage Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "Charged per cubic foot per month. Current rate: $0.75 Jan-Sep. Seasonal increases apply Oct-Dec but rates are lower than Amazon. Fee Agent must verify current seasonal rates. Only applies when business_model is fbm."
+
+# Search query templates for Fee Agent
+# Fee Agent will substitute {product_category} at runtime with the actual category
+# Multiple queries ensure multi-source verification per spec
+# Used by: Fee Agent (searching for fees, multi-source verification)
+fee_search_queries:
+  - "Walmart Marketplace referral fees by category 2026 {product_category}"
+  - "Walmart seller fees complete breakdown 2026"
+  - "Walmart Fulfillment Services WFS fees 2026"
+  - "site:marketplace.walmart.com pricing fees"
+
+# Listing constraints for the Report Agent
+# Report Agent uses these to generate marketplace-optimized listing draft within limits
+# Used by: Report Agent (generates title and description within these limits)
+listing_constraints:
+  title_max_chars: 75
+  bullet_count: 6
+  description_max_chars: 4000
+  title_style: "keyword-dense"
+  note: "Walmart title must be under 75 characters — this is a hard constraint. Include brand, product type, and key feature. No promotional language like 'Best' or 'Sale'. First 80 characters are most visible in search results."
+
+# Supplier source hints for the Supplier Agent
+# These guide search query construction — not hardcoded supplier lists
+# Used by: Supplier Agent (search query templates)
+supplier_sources:
+  - "Alibaba"
+  - "AliExpress"
+  - "CJDropshipping"
+  - "US wholesale suppliers"
+  - "Walmart-approved dropship suppliers"
+
+# Special notes and rules specific to Walmart USA
+# Used by: Risk Assessor Agent (assess market factors)
+# Used by: Report Agent (recommendations section)
+special_notes:
+  - "No monthly subscription fee required — only referral fee per sale. This is a key advantage over Amazon's $39.99/month Professional Plan."
+  - "Referral fee is all-inclusive — no separate payment processing fee. Simplifies margin calculation compared to other platforms."
+  - "WFS (Walmart Fulfillment Services) badge in listings boosts search ranking significantly — seller choice to use WFS or not."
+  - "Pro Seller badge becomes available after 100 orders with good metrics — builds trust and visibility."
+  - "Back-to-school (August-September) and holiday Q4 (November-December) are peak seasons for most product categories."
+  - "Walmart Marketplace integrates with Sam's Club listings — potential for increased visibility beyond Walmart.com."
+  - "Supplier must meet Walmart's product compliance and packaging standards — verify before listing."

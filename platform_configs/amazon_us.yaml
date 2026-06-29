@@ -1,0 +1,92 @@
+# Amazon USA Platform Configuration
+# Used by: Competitor Agent, Fee Agent, Report Agent, Margin Calculator Agent
+# This config defines all fees, marketplace rules, and constraints for Amazon USA sellers
+
+marketplace_name: "Amazon USA"
+marketplace_id: "amazon_us"
+region: "US"
+currency: "USD"
+
+# Business models supported on this platform
+# Used by: Orchestrator Agent (validates user input)
+supported_business_models:
+  - dropshipping  # Seller sources product on-demand, supplier ships to customer
+  - fbs           # Seller holds inventory, ships orders themselves
+  - fbm           # FBA (Fulfilled by Amazon) — Amazon warehouse handles fulfillment
+
+# Fee categories the Fee Agent must search for
+# Each fee here is REQUIRED to appear in final output before Margin Calculator runs
+# Used by: Fee Agent (search queries), Margin Calculator Agent (line-by-line breakdown)
+fee_categories:
+  # Standard fees — apply to all business models (dropshipping, fbs, fbm)
+  - name: "Professional Seller Plan"
+    type: "flat_monthly"
+    amount: 39.99
+    applies_to: "all_models"
+    note: "Required monthly subscription to sell on Amazon Marketplace. $39.99/month flat rate, charged regardless of sales volume. Individual plan option ($0.99 per unit) available for low-volume sellers — not recommended for most. Fee Agent should note this is a fixed monthly cost all sellers must budget."
+
+  - name: "Referral Fee"
+    type: "percentage"
+    applies_to: "total_sale_price"
+    note: "Varies significantly by product category. Range: 8% to 45% of selling price. Most common categories: 15%. Some categories like electronics can go higher. Fee Agent MUST search current rate for the specific product category — never assume 15%."
+
+  # FBA-specific fees — only apply when business_model is fbm
+  - name: "FBA Fulfillment Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "Charged per unit fulfilled by Amazon. Varies by size tier and weight. Small Standard size starts at $3.22. Oversize and large items have higher fees. Fee Agent must search current rates by size tier. Size tier selection significantly impacts margin — small items are most profitable on FBA."
+
+  - name: "FBA Fuel Surcharge"
+    type: "percentage"
+    applies_to: "fba_fulfillment_fee"
+    rate: 3.5
+    note: "3.5% surcharge added on top of FBA Fulfillment Fee. Effective April 17, 2026. New in 2026 — many sellers miss this. Fee Agent must include and highlight this as a new cost affecting margin."
+
+  - name: "FBA Storage Fee"
+    type: "dynamic"
+    applies_to: "fbm_only"
+    note: "Charged per cubic foot per month. Two rates: Jan-Sep: Standard $0.78, Oversize $0.56 per cu-ft. Oct-Dec (Q4): Standard $2.40, Oversize $1.40 per cu-ft. Q4 storage is roughly 3x the rest of year. This is critical for margin planning — overstock in Oct-Dec dramatically reduces profitability. Fee Agent must emphasize Q4 risk in output."
+
+# Search query templates for Fee Agent
+# Fee Agent will substitute {product_category} at runtime with the actual category
+# Multiple queries ensure multi-source verification per spec
+# Used by: Fee Agent (searching for fees, multi-source verification)
+fee_search_queries:
+  - "Amazon seller referral fees by category 2026 {product_category}"
+  - "Amazon FBA fulfillment fees 2026"
+  - "Amazon FBA storage fees 2026 per cubic foot"
+  - "Amazon seller fees complete breakdown 2026"
+  - "site:sellercentral.amazon.com fees schedule"
+
+# Listing constraints for the Report Agent
+# Report Agent uses these to generate marketplace-optimized listing draft within limits
+# Used by: Report Agent (generates title and description within these limits)
+listing_constraints:
+  title_max_chars: 200
+  bullet_count: 5
+  description_max_chars: 2000
+  title_style: "feature-dense"
+  note: "Amazon title can be up to 200 chars. Strategy: include brand, key feature, size, color, quantity in first 80 chars (most visible). Use high-volume keywords discovered by Competitor Agent. Amazon search algorithm prioritizes relevance over keyword density."
+
+# Supplier source hints for the Supplier Agent
+# These guide search query construction — not hardcoded supplier lists
+# Used by: Supplier Agent (search query templates)
+supplier_sources:
+  - "Alibaba"
+  - "AliExpress"
+  - "CJDropshipping"
+  - "US wholesale suppliers"
+  - "Global Sources"
+
+# Special notes and rules specific to Amazon USA
+# Used by: Risk Assessor Agent (assess market factors, seasonal risk)
+# Used by: Report Agent (recommendations section)
+special_notes:
+  - "Professional plan $39.99/month is mandatory for marketplace sellers — factor into monthly break-even calculation. Annual cost $479.88 must be recovered from sales."
+  - "FBA fuel surcharge added April 2026 — many existing sellers miss this 3.5% cost. New cost that reduces FBA profitability vs prior year."
+  - "Q4 storage fees are 3x regular rate (Oct-Dec). Excess FBA inventory in Q4 is extremely expensive. Margin Calculator should flag high seasonality risk if Q4 inventory projection is large."
+  - "500+ reviews needed to rank competitively in most categories — new sellers face uphill battle. Price competitively or differentiate to gain initial reviews."
+  - "Amazon Choice badge significantly boosts conversion rate and search ranking — status depends on price, shipping speed, customer ratings. FBA eligible products have advantage."
+  - "FBA inbound placement fee may apply when sending inventory to multiple Amazon fulfillment centers — factor into inventory budgeting."
+  - "Size tier selection is critical for FBA profitability — smaller items have lower fulfillment fees. Research product dimensions carefully."
+  - "Brand Registry optional but provides brand protection and enhanced advertising options. Consider for repeat sellers with branded products."
