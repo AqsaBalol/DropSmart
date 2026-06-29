@@ -62,11 +62,9 @@ class BaseAgent(ABC):
         # --- Configure the shared google.generativeai client ---
         # configure() is a module-level call; calling it per-instance is safe
         # because it simply overwrites the module-level API key each time.
-        genai.configure(api_key=api_key)
 
-        # Create a model instance bound to this agent; subclasses call
-        # _safe_generate() and never touch self._gemini_model directly.
-        self._gemini_model = genai.GenerativeModel(model_name=self._model_id)
+        # google.genai (new SDK) uses Client, not module-level configure()
+        self._client = genai.Client(api_key=api_key)
 
         # --- Structured logger namespaced to this agent ---
         # Using a hierarchical name means a log filter of "dropsmart" captures
@@ -189,9 +187,9 @@ class BaseAgent(ABC):
             )
 
         try:
-            response = self._gemini_model.generate_content(prompt)
-            # Access .text directly — if generation was blocked by safety
-            # filters, this raises an exception, which the except block catches.
+            response = self._client.models.generate_content(
+                model=self._model_id, contents=prompt
+            )
             return response.text
 
         except Exception as exc:
