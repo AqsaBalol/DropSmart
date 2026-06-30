@@ -15,15 +15,6 @@ from typing import Any
 from agents.base_agent import BaseAgent
 
 
-# ---------------------------------------------------------------------------
-# Currency symbols for formatted output
-# ---------------------------------------------------------------------------
-
-_CURRENCY_SYMBOLS: dict[str, str] = {
-    "PKR": "PKR",
-    "USD": "$",
-}
-
 # Business models where the seller personally ships — courier cost is real
 _SELLER_SHIPS_MODELS: frozenset[str] = frozenset({"dropshipping", "fbs"})
 
@@ -116,8 +107,10 @@ class MarginAgent(BaseAgent):
 
         # --- Extract all input values ---
         fee_data: dict[str, Any] = self._extract_fee_data(context)
-        currency: str = fee_data.get("currency", "USD")
-        symbol: str = _CURRENCY_SYMBOLS.get(currency, currency)
+        # Currency and symbol are derived from marketplace, not from fee_result,
+        # so they are correct even when the fee agent failed and returned no data.
+        currency: str = "PKR" if marketplace == "daraz_pk" else "USD"
+        symbol: str = self._get_currency_symbol(context)
 
         selling_price: float = self._extract_selling_price(context, warnings)
         supplier_cost: float = self._extract_supplier_cost(context, currency, warnings)
@@ -271,6 +264,9 @@ class MarginAgent(BaseAgent):
                 "margin_pct": margin_pct,
                 "break_even_price": break_even_price,
                 "currency": currency,
+                "monthly_profit_potential": self._build_monthly_projections(
+                    net_profit_per_unit
+                ),
                 "calculation_breakdown": breakdown,
                 "warnings": warnings,
             }
@@ -464,19 +460,22 @@ class MarginAgent(BaseAgent):
         lines: list[str] = []
         sep = "─" * 44
 
-        lines.append(f"Selling Price:          {symbol} {selling_price:>10.2f}")
+        # symbol already includes the correct spacing for each currency:
+        # "PKR " (trailing space) for Daraz → "PKR 1,799.00"
+        # "$" (no space)  for US platforms  → "$29.99"
+        lines.append(f"Selling Price:          {symbol}{selling_price:>10.2f}")
         lines.append(sep)
 
         # --- Cost section ---
-        lines.append(f"  Supplier Cost:      - {symbol} {supplier_cost:>10.2f}")
+        lines.append(f"  Supplier Cost:      - {symbol}{supplier_cost:>10.2f}")
 
         # Only include packaging and courier when non-zero — zero values add no
         # information and clutter the table for dropshipping runs where they are 0.
         if packaging_cost > 0.0:
-            lines.append(f"  Packaging Cost:     - {symbol} {packaging_cost:>10.2f}")
+            lines.append(f"  Packaging Cost:     - {symbol}{packaging_cost:>10.2f}")
 
         if courier_cost > 0.0:
-            lines.append(f"  Courier / Shipping: - {symbol} {courier_cost:>10.2f}")
+            lines.append(f"  Courier / Shipping: - {symbol}{courier_cost:>10.2f}")
 
         lines.append(sep)
 
@@ -484,26 +483,26 @@ class MarginAgent(BaseAgent):
         if commission_amount > 0.0:
             lines.append(
                 f"  Commission ({commission_pct:.2f}%): "
-                f"- {symbol} {commission_amount:>10.2f}"
+                f"- {symbol}{commission_amount:>10.2f}"
             )
 
         # VAT on commission: only shown for Daraz (vat_on_commission_pct > 0)
         if commission_vat_amount > 0.0:
             lines.append(
                 f"  VAT on Commission ({vat_on_commission_pct:.0f}%): "
-                f"- {symbol} {commission_vat_amount:>10.2f}"
+                f"- {symbol}{commission_vat_amount:>10.2f}"
             )
 
         if payment_processing_amount > 0.0:
             lines.append(
                 f"  Payment Processing ({payment_processing_pct:.2f}%): "
-                f"- {symbol} {payment_processing_amount:>10.2f}"
+                f"- {symbol}{payment_processing_amount:>10.2f}"
             )
 
         if payment_processing_vat_amount > 0.0:
             lines.append(
                 f"  VAT on Payment Proc. ({vat_on_payment_processing_pct:.0f}%): "
-                f"- {symbol} {payment_processing_vat_amount:>10.2f}"
+                f"- {symbol}{payment_processing_vat_amount:>10.2f}"
             )
 
         # --- Handling fee line — label differs by marketplace ---
@@ -513,26 +512,78 @@ class MarginAgent(BaseAgent):
             if marketplace == "daraz_pk":
                 lines.append(
                     f"  Handling Fee (tiered): "
-                    f"- {symbol} {handling_fee_amount:>10.2f}"
+                    f"- {symbol}{handling_fee_amount:>10.2f}"
                 )
             else:
                 lines.append(
                     f"  Handling / Listing Fee: "
-                    f"- {symbol} {handling_fee_amount:>10.2f}"
+                    f"- {symbol}{handling_fee_amount:>10.2f}"
                 )
 
         if handling_fee_vat_amount > 0.0:
             lines.append(
                 f"  VAT on Handling Fee ({vat_on_handling_fee_pct:.0f}%): "
-                f"- {symbol} {handling_fee_vat_amount:>10.2f}"
+                f"- {symbol}{handling_fee_vat_amount:>10.2f}"
             )
 
         # --- Summary section ---
         lines.append(sep)
         lines.append(
-            f"Net Profit per Unit:    {symbol} {net_profit_per_unit:>10.2f}"
+            f"Net Profit per Unit:    {symbol}{net_profit_per_unit:>10.2f}"
         )
         lines.append(f"Margin %:               {margin_pct:>10.2f}%")
-        lines.append(f"Break-Even Price:       {symbol} {break_even_price:>10.2f}")
+        lines.append(f"Break-Even Price:       {symbol}{break_even_price:>10.2f}")
 
         return lines
+
+    # ------------------------------------------------------------------
+    # Currency helper
+    # ------------------------------------------------------------------
+
+    def _get_currency_symbol(self, context: dict[str, Any]) -> str:
+        """Returns the display currency symbol for the target marketplace.
+
+        Derived from ``context["marketplace"]`` rather than from
+        ``fee_result["currency"]`` so the symbol is always correct even when
+        the Fee Agent failed and returned no data.
+
+        Symbol formatting:
+        - Daraz Pakistan → ``"PKR "`` (trailing space so the symbol and amount
+          read naturally as a prefix, e.g. ``"PKR 1,799.00"``).
+        - All US marketplaces → ``"$"`` (no space, e.g. ``"$29.99"``).
+
+        Args:
+            context: Cumulative session context. Reads ``"marketplace"`` key.
+
+        Returns:
+            ``"PKR "`` for ``daraz_pk``, ``"$"`` for all other marketplaces.
+        """
+        marketplace: str = context.get("marketplace", "").strip()
+        return "PKR " if marketplace == "daraz_pk" else "$"
+
+    # ------------------------------------------------------------------
+    # Monthly projection helper
+    # ------------------------------------------------------------------
+
+    def _build_monthly_projections(
+        self, net_profit_per_unit: float
+    ) -> dict[str, float]:
+        """Calculates monthly profit potential at three unit-volume tiers.
+
+        Pure multiplication — no new inputs required beyond the net profit
+        per unit already computed by ``run()``. Each value is the profit the
+        seller would earn if they sold that many units in a month.
+
+        Args:
+            net_profit_per_unit: Net profit per unit after all deductions,
+                as calculated by the core arithmetic in ``run()``.
+
+        Returns:
+            Dict with keys ``"50_units"``, ``"100_units"``, ``"200_units"``,
+            each holding the total monthly profit rounded to 2 decimal places.
+        """
+        return {
+            "50_units": round(net_profit_per_unit * 50, 2),
+            "100_units": round(net_profit_per_unit * 100, 2),
+            "200_units": round(net_profit_per_unit * 200, 2),
+        }
