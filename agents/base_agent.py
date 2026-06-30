@@ -41,7 +41,7 @@ class BaseAgent(ABC):
             set in the environment.
     """
 
-    def __init__(self, agent_name: str, model: str = "gemini-2.0-flash") -> None:
+    def __init__(self, agent_name: str, model: str = "gemini-2.5-flash-lite") -> None:
         # Reject blank names immediately — a nameless agent produces unreadable logs
         if not agent_name or not agent_name.strip():
             raise ValueError("agent_name must be a non-empty string.")
