@@ -36,15 +36,20 @@ class RiskAgent(BaseAgent):
     - **margin_risk**: based on ``margin_result.margin_pct``
     - **competition_risk**: based on ``competitor_result.market_saturation``
     - **supplier_risk**: based on ``supplier_result.reliability_score``
-    - **fee_accuracy_risk**: based on ``fee_result.missing_fees_detected``
-    - **market_saturation_risk**: same signal as competition_risk
-    - **data_freshness_risk**: based on ``supplier_result.data_freshness_warning``
+    - **market_saturation_risk**: listing discoverability, same saturation signal
+    - **trend_risk**: based on ``competitor_result.trends_and_seasonality.trend_direction``
+    - **seasonality_risk**: based on ``product_type`` and ``current_month_demand_signal``
+
+    Fee accuracy and data freshness are no longer scored as dimensions; when
+    either signal is triggered it surfaces as a plain entry in ``warnings``.
 
     Output contract — ``risk_result`` contains:
     - ``overall_risk_level``: ``"low"`` / ``"medium"`` / ``"high"``
     - ``risk_score``: integer 0–100 (mean of the six dimension scores)
     - ``top_risks``: list of three human-readable strings for the worst dimensions
     - ``risk_dimensions``: dict of six ``{score, level, reason}`` dicts
+      (keys: ``margin_risk``, ``competition_risk``, ``supplier_risk``,
+      ``market_saturation_risk``, ``trend_risk``, ``seasonality_risk``)
     - ``go_no_go_signal``: ``"GO"`` / ``"CAUTION"`` / ``"NO-GO"``
     - ``warnings``: list of data-quality notes raised during scoring
     """
@@ -69,9 +74,12 @@ class RiskAgent(BaseAgent):
             context: Cumulative session context. Keys consumed here:
                 - ``margin_result.margin_pct`` (float)
                 - ``competitor_result.market_saturation`` (str)
+                - ``competitor_result.trends_and_seasonality.trend_direction`` (str)
+                - ``competitor_result.trends_and_seasonality.product_type`` (str)
+                - ``competitor_result.trends_and_seasonality.current_month_demand_signal`` (str)
                 - ``supplier_result.reliability_score`` (int)
-                - ``supplier_result.data_freshness_warning`` (bool)
-                - ``fee_result.missing_fees_detected`` (bool)
+                - ``supplier_result.data_freshness_warning`` (bool) — warnings only
+                - ``fee_result.missing_fees_detected`` (bool) — warnings only
                 Also used for labelling: ``product``, ``marketplace``.
 
         Returns:
@@ -89,8 +97,18 @@ class RiskAgent(BaseAgent):
         market_saturation: str = self._extract_market_saturation(context, warnings)
         reliability_score: float = self._extract_reliability_score(context, warnings)
         supplier_found: bool = self._extract_supplier_found(context)
-        missing_fees: bool = self._extract_missing_fees(context, warnings)
-        data_freshness_warning: bool = self._extract_data_freshness_warning(context)
+        competitor_result: dict[str, Any] = context.get("competitor_result", {})
+
+        # fee_accuracy and data_freshness are no longer scored as dimensions;
+        # surface their signals as plain warnings instead.
+        if self._extract_missing_fees(context):
+            warnings.append(
+                "Fee data could not be fully verified — margin may be overstated."
+            )
+        if self._extract_data_freshness_warning(context):
+            warnings.append(
+                "Supplier price data may be outdated — verify before listing."
+            )
 
         # ----------------------------------------------------------------
         # Score each dimension (pure Python — no Gemini)
@@ -98,19 +116,20 @@ class RiskAgent(BaseAgent):
         margin_dim = self._score_margin_risk(margin_pct)
         competition_dim = self._score_competition_risk(market_saturation)
         supplier_dim = self._score_supplier_risk(reliability_score, supplier_found)
-        fee_accuracy_dim = self._score_fee_accuracy_risk(missing_fees)
-        # Market saturation risk re-uses the same market_saturation signal —
-        # it is a distinct reporting dimension even though the input is the same.
+        # Market saturation risk re-uses the same saturation signal —
+        # it is a distinct reporting dimension: competition risk reflects pricing
+        # pressure; market saturation risk reflects listing discoverability.
         market_saturation_dim = self._score_market_saturation_risk(market_saturation)
-        data_freshness_dim = self._score_data_freshness_risk(data_freshness_warning)
+        trend_dim = self._score_trend_risk(competitor_result)
+        seasonality_dim = self._score_seasonality_risk(competitor_result)
 
         risk_dimensions: dict[str, dict[str, Any]] = {
             "margin_risk": margin_dim,
             "competition_risk": competition_dim,
             "supplier_risk": supplier_dim,
-            "fee_accuracy_risk": fee_accuracy_dim,
             "market_saturation_risk": market_saturation_dim,
-            "data_freshness_risk": data_freshness_dim,
+            "trend_risk": trend_dim,
+            "seasonality_risk": seasonality_dim,
         }
 
         # ----------------------------------------------------------------
@@ -266,25 +285,6 @@ class RiskAgent(BaseAgent):
 
         return {"score": score, "level": self._score_dimension(score), "reason": reason}
 
-    def _score_fee_accuracy_risk(self, missing_fees: bool) -> dict[str, Any]:
-        """Scores fee accuracy risk based on whether FeeAgent flagged gaps.
-
-        Args:
-            missing_fees: ``True`` when FeeAgent detected at least one fee
-                component it could not confirm.
-
-        Returns:
-            Dict with ``score``, ``level``, and ``reason``.
-        """
-        if missing_fees:
-            score = 70
-            reason = "FeeAgent detected missing fee components — margin may be overstated."
-        else:
-            score = 10
-            reason = "All expected fee components were identified — fee data is complete."
-
-        return {"score": score, "level": self._score_dimension(score), "reason": reason}
-
     def _score_market_saturation_risk(self, market_saturation: str) -> dict[str, Any]:
         """Scores market saturation risk (same signal as competition risk).
 
@@ -310,22 +310,80 @@ class RiskAgent(BaseAgent):
         )
         return {"score": score, "level": self._score_dimension(score), "reason": reason}
 
-    def _score_data_freshness_risk(self, data_freshness_warning: bool) -> dict[str, Any]:
-        """Scores data freshness risk based on the SupplierAgent's staleness flag.
+    def _score_trend_risk(self, competitor_result: dict[str, Any]) -> dict[str, Any]:
+        """Scores trend risk from the market trend direction in competitor_result.
+
+        A growing market lowers risk; a declining market raises it significantly.
+        Defaults to the "unknown" branch (score 50) when trend data is absent so
+        the method never raises an exception.
 
         Args:
-            data_freshness_warning: ``True`` when SupplierAgent indicated that
-                supplier prices may be stale or unverifiable.
+            competitor_result: The ``competitor_result`` dict from context.
+                Reads ``trends_and_seasonality.trend_direction``.
 
         Returns:
-            Dict with ``score``, ``level``, and ``reason``.
+            Dict with ``score`` (int), ``level`` (str), and ``reason`` (str).
         """
-        if data_freshness_warning:
-            score = 60
-            reason = "Supplier data freshness warning raised — prices may be outdated."
+        trends: dict = competitor_result.get("trends_and_seasonality", {})
+        trend_direction: str = str(
+            trends.get("trend_direction", "unknown")
+        ).strip().lower()
+
+        mapping: dict[str, tuple[int, str]] = {
+            "growing":  (15, "Market is growing — favorable timing."),
+            "stable":   (35, "Market is stable — steady but not expanding."),
+            "declining": (75, "Market is declining — demand is contracting."),
+        }
+        score, reason = mapping.get(
+            trend_direction,
+            (50, "Trend direction unknown — insufficient data to assess market momentum."),
+        )
+        return {"score": score, "level": self._score_dimension(score), "reason": reason}
+
+    def _score_seasonality_risk(
+        self, competitor_result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Scores seasonality risk from product type and current demand signal.
+
+        Fad products carry high risk regardless of current demand; evergreen
+        products are low risk. Seasonal products vary by the current month's
+        demand signal. Defaults to the "unknown" branches when data is absent.
+
+        Args:
+            competitor_result: The ``competitor_result`` dict from context.
+                Reads ``trends_and_seasonality.product_type`` and
+                ``trends_and_seasonality.current_month_demand_signal``.
+
+        Returns:
+            Dict with ``score`` (int), ``level`` (str), and ``reason`` (str).
+        """
+        trends: dict = competitor_result.get("trends_and_seasonality", {})
+        product_type: str = str(
+            trends.get("product_type", "unknown")
+        ).strip().lower()
+        demand_signal: str = str(
+            trends.get("current_month_demand_signal", "unknown")
+        ).strip().lower()
+
+        if product_type == "fad":
+            score = 80
+            reason = "Fad product — demand spike is likely temporary, high obsolescence risk."
+        elif product_type == "evergreen":
+            score = 20
+            reason = "Evergreen product — stable demand year-round."
+        elif product_type == "seasonal":
+            seasonal_map: dict[str, tuple[int, str]] = {
+                "high":     (15, "Seasonal product — currently in peak demand window."),
+                "moderate": (40, "Seasonal product — moderate demand, approaching or leaving peak."),
+                "low":      (70, "Seasonal product — currently in low-demand period."),
+            }
+            score, reason = seasonal_map.get(
+                demand_signal,
+                (50, "Seasonal product — current demand signal is unknown."),
+            )
         else:
-            score = 10
-            reason = "Supplier data appears current — no freshness concerns."
+            score = 50
+            reason = "Product type unknown — seasonality risk cannot be assessed."
 
         return {"score": score, "level": self._score_dimension(score), "reason": reason}
 
@@ -394,7 +452,7 @@ class RiskAgent(BaseAgent):
             A plain-English summary string. Returns a fallback sentence if
             the Gemini call fails so the pipeline is not blocked.
         """
-        product: str = context.get("product", "the product")
+        product: str = context.get("product_name", "the product")
         marketplace: str = context.get("marketplace", "the marketplace")
 
         # Build a compact summary of each dimension for Gemini to narrate
@@ -527,27 +585,17 @@ class RiskAgent(BaseAgent):
         suppliers: list = supplier_result.get("suppliers", [])
         return bool(suppliers)
 
-    def _extract_missing_fees(
-        self, context: dict[str, Any], warnings: list[str]
-    ) -> bool:
+    def _extract_missing_fees(self, context: dict[str, Any]) -> bool:
         """Reads missing_fees_detected from fee_result in context.
 
         Args:
             context: Session context.
-            warnings: Mutable list — appended to when fee_result is absent.
 
         Returns:
-            ``True`` if missing fees were detected, ``False`` otherwise.
+            ``True`` if FeeAgent detected at least one missing fee component,
+            ``False`` when the flag is absent or fee_result is missing entirely.
         """
         fee_result: dict = context.get("fee_result", {})
-
-        if not fee_result:
-            warnings.append(
-                "fee_result not found in context — fee_accuracy_risk assumes no missing fees. "
-                "Ensure FeeAgent ran before RiskAgent."
-            )
-            return False
-
         return bool(fee_result.get("missing_fees_detected", False))
 
     def _extract_data_freshness_warning(self, context: dict[str, Any]) -> bool:
