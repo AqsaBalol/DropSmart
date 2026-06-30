@@ -100,7 +100,9 @@ class SupplierAgent(BaseAgent):
                             "price_usd": float,      # or "price_pkr" for daraz_pk
                             "moq": int,
                             "shipping_days": str,
+                            "shipping_cost": float,  # 0.0 if not found in results
                             "reliability_score": int,  # 1–10
+                            "risk_label": str,       # "LOW"/"MEDIUM"/"HIGH"/"UNKNOWN"
                             "source_url": str,
                             "data_retrieved_date": str  # ISO 8601 date
                         },
@@ -185,6 +187,13 @@ class SupplierAgent(BaseAgent):
             raw_response=raw_response,
             marketplace=marketplace,
         )
+
+        # --- Attach risk_label to each supplier in pure Python ---
+        # Done here rather than in _parse_gemini_response so it is always applied
+        # regardless of which code path populates the suppliers list.
+        for supplier in suppliers:
+            score: float = float(supplier.get("reliability_score", 0))
+            supplier["risk_label"] = self._derive_risk_label(score)
 
         # --- Determine the recommended supplier ---
         recommended: str = self._pick_recommended_supplier(
@@ -335,6 +344,9 @@ CRITICAL RULES — follow these exactly:
 8. source_url must come directly from the search result URLs — never construct a URL.
 9. data_retrieved_date for every supplier must be exactly: {today}
 10. Include at most 5 suppliers. Rank them by relevance to the business model priority above.
+11. shipping_cost: extract the per-shipment or per-unit shipping cost as a float when
+    mentioned in the snippets (e.g. "shipping $2" → 2.0, "PKR 180 shipping" → 180.0,
+    "free shipping" → 0.0). Use 0.0 if no shipping cost is mentioned — never invent a value.
 
 SEARCH RESULTS:
 {search_results}
@@ -347,6 +359,7 @@ Return a JSON object in exactly this structure:
       "{price_key}": 0.00,
       "moq": 0,
       "shipping_days": "7-14",
+      "shipping_cost": 0.0,
       "reliability_score": 5,
       "source_url": "https://...",
       "data_retrieved_date": "{today}",
@@ -522,3 +535,36 @@ Return a JSON object in exactly this structure:
             return suppliers[0].get("name", "N/A")
 
         return "N/A — no suppliers found in search results"
+
+    # ------------------------------------------------------------------
+    # Risk label helper
+    # ------------------------------------------------------------------
+
+    def _derive_risk_label(self, reliability_score: float) -> str:
+        """Maps a supplier reliability score to a human-readable risk label.
+
+        Computed in pure Python after Gemini extraction — the label is never
+        asked of Gemini because it is a deterministic function of the numeric
+        score, and asking Gemini would introduce unnecessary variance.
+
+        Mapping:
+        - score >= 8 → ``"LOW"``   (reliable, well-reviewed supplier)
+        - score 5–7  → ``"MEDIUM"`` (adequate, monitor quality)
+        - score 1–4  → ``"HIGH"``   (low confidence in fulfilment)
+        - score == 0 → ``"UNKNOWN"`` (no signal found in search results)
+
+        Args:
+            reliability_score: The numeric score 0–10 extracted by Gemini
+                from supplier snippet signals (badges, reviews, tenure).
+                0 means no signal was found.
+
+        Returns:
+            One of ``"LOW"``, ``"MEDIUM"``, ``"HIGH"``, or ``"UNKNOWN"``.
+        """
+        if reliability_score == 0:
+            return "UNKNOWN"
+        if reliability_score >= 8:
+            return "LOW"
+        if reliability_score >= 5:
+            return "MEDIUM"
+        return "HIGH"
