@@ -9,6 +9,7 @@ defined — so none of that boilerplate repeats across seven agent files.
 # --- Standard library ---
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -154,17 +155,29 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
 
     def _safe_generate(self, prompt: str) -> str:
-        """Sends a prompt to Gemini and returns the response text.
+        """Sends a prompt to Gemini using a model-fallback chain.
 
-        Wraps the raw ``generate_content`` call so that every subclass gets
-        consistent error logging and a guaranteed string return type without
-        duplicating try/except blocks in each agent file.
+        Tries each model in the chain returned by ``_build_fallback_chain``
+        in order:
 
-        The method re-raises the exception after logging it. This is
-        intentional — the calling agent's ``run()`` method should decide
-        whether to retry, fall back to a default, or let the error propagate
-        to the Orchestrator. Swallowing the exception here would hide failures
-        that the pipeline needs to surface at the HITL checkpoint.
+        1. ``self._model_id`` — the agent's assigned model.
+        2. ``"gemini-2.5-flash"`` — mid-tier fallback.
+        3. ``"gemini-2.5-pro"``  — most capable fallback.
+
+        Duplicates are removed so an agent already assigned one of the
+        fallback models never issues two calls to the same endpoint.
+
+        For each model the method attempts the call exactly once:
+
+        - **Success**: returns ``response.text`` immediately. Logs at INFO
+          if the call succeeded on a fallback model (not the first in chain).
+        - **Transient error** (503 / UNAVAILABLE / RESOURCE_EXHAUSTED):
+          logs a WARNING, waits 2 seconds, then moves to the next model.
+        - **Non-transient error**: logs at ERROR and re-raises immediately
+          without trying any further models.
+
+        If every model in the chain fails with transient errors, logs at
+        ERROR listing all attempted models and re-raises the last exception.
 
         Args:
             prompt: The full prompt string to send to Gemini. Must be
@@ -176,8 +189,8 @@ class BaseAgent(ABC):
 
         Raises:
             ValueError: If ``prompt`` is empty.
-            Exception: Re-raises any exception from the Gemini SDK after
-                logging it at ERROR level so the stack trace is preserved.
+            Exception: Re-raises the SDK exception after logging it at
+                ERROR level so the stack trace is preserved for the caller.
         """
         # Guard against accidentally sending an empty prompt — Gemini would
         # return an error anyway, but catching it here gives a cleaner message.
@@ -186,17 +199,104 @@ class BaseAgent(ABC):
                 f"[{self._agent_name}] prompt must be a non-empty string."
             )
 
-        try:
-            response = self._client.models.generate_content(
-                model=self._model_id, contents=prompt
-            )
-            return response.text
+        chain: list[str] = self._build_fallback_chain()
+        last_exc: Exception | None = None
 
-        except Exception as exc:
-            # Log at ERROR so this is always visible in the log stream, even
-            # when the root logger's level is set to WARNING in production.
-            self._logger.error(
-                "[%s] Gemini generation failed: %s", self._agent_name, exc
-            )
-            # Re-raise so the Orchestrator can decide how to handle it
-            raise
+        for attempt_idx, model_id in enumerate(chain):
+            try:
+                response = self._client.models.generate_content(
+                    model=model_id, contents=prompt
+                )
+                # Log a fallback success so the operator can see which model
+                # actually served the request during degraded conditions.
+                if attempt_idx > 0:
+                    self._logger.info(
+                        "[%s] Gemini call succeeded on fallback model '%s' "
+                        "(attempt %d/%d).",
+                        self._agent_name,
+                        model_id,
+                        attempt_idx + 1,
+                        len(chain),
+                    )
+                return response.text
+
+            except Exception as exc:
+                if self._is_transient_error(exc):
+                    last_exc = exc
+                    self._logger.warning(
+                        "[%s] Transient error on model '%s': %s — "
+                        "waiting 2 s before trying next model.",
+                        self._agent_name,
+                        model_id,
+                        exc,
+                    )
+                    if attempt_idx < len(chain) - 1:
+                        time.sleep(2)
+                else:
+                    # Non-transient: no point trying other models
+                    self._logger.error(
+                        "[%s] Non-transient Gemini error on model '%s': %s",
+                        self._agent_name,
+                        model_id,
+                        exc,
+                    )
+                    raise
+
+        # Every model in the chain exhausted — surface the final failure
+        self._logger.error(
+            "[%s] All %d model(s) in the fallback chain failed with "
+            "transient errors: %s",
+            self._agent_name,
+            len(chain),
+            chain,
+        )
+        raise last_exc  # type: ignore[misc]  # guaranteed non-None here
+
+    def _build_fallback_chain(self) -> list[str]:
+        """Returns the ordered list of model IDs to attempt, without duplicates.
+
+        Always starts with ``self._model_id`` (the agent's assigned model),
+        then appends ``"gemini-2.5-flash"`` and ``"gemini-2.5-pro"`` as
+        fallbacks. Entries already present are skipped so the same model is
+        never tried twice.
+
+        Returns:
+            Ordered list of model ID strings, length 1–3 depending on
+            how many of the fallback models differ from ``self._model_id``.
+        """
+        _FALLBACKS: list[str] = ["gemini-2.5-flash", "gemini-2.5-pro"]
+        seen: set[str] = set()
+        chain: list[str] = []
+        for model_id in [self._model_id, *_FALLBACKS]:
+            if model_id not in seen:
+                seen.add(model_id)
+                chain.append(model_id)
+        return chain
+
+    @staticmethod
+    def _is_transient_error(exc: Exception) -> bool:
+        """Returns ``True`` for errors that warrant trying a fallback model.
+
+        Checks the string representation of the exception for known transient
+        signal strings. Transient errors indicate temporary service-side
+        problems (overload, rolling restart) where a different model endpoint
+        may succeed immediately.
+
+        Recognised signals (case-insensitive):
+        - ``"503"`` — HTTP Service Unavailable
+        - ``"UNAVAILABLE"`` — gRPC status UNAVAILABLE
+        - ``"RESOURCE_EXHAUSTED"`` — quota or rate-limit exceeded
+
+        Args:
+            exc: The exception raised by the Gemini SDK.
+
+        Returns:
+            ``True`` if the error is transient and a fallback attempt is
+            warranted; ``False`` for auth errors, malformed requests, and
+            any other non-recoverable failures.
+        """
+        msg: str = str(exc).upper()
+        return any(
+            signal in msg
+            for signal in ("503", "UNAVAILABLE", "RESOURCE_EXHAUSTED")
+        )
