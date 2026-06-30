@@ -39,9 +39,19 @@ def get_user_input() -> dict[str, Any]:
     and conditionally for province (Daraz Pakistan only). Shows numbered
     menus for multi-choice fields. Returns a dict ready for the Orchestrator.
 
+    Cost questions are conditional on the business model:
+
+    - ``fulfilled_by_seller``: asks ``packaging_cost`` and ``courier_cost``.
+    - ``dropshipping``: sets both to ``0.0`` automatically (supplier handles
+      fulfilment) and prints a one-line note.
+    - ``fulfilled_by_marketplace``: sets both to ``0.0`` and instead asks for
+      ``fulfillment_prep_cost`` (cost to ship bulk inventory to the marketplace
+      warehouse, per unit).
+
     Returns:
         A dict with keys: ``product_name``, ``marketplace``, ``business_model``,
-        ``packaging_cost``, ``courier_cost``, and optionally ``province``.
+        ``packaging_cost``, ``courier_cost``, and optionally ``province``
+        (Daraz Pakistan only) and ``fulfillment_prep_cost`` (FBM/FBA only).
     """
     print("\n" + "=" * 60)
     print("DropSmart Product Intelligence System")
@@ -89,12 +99,27 @@ def get_user_input() -> dict[str, Any]:
             break
         print("Invalid choice. Please enter 1-3.")
 
-    # --- Costs (with defaults) ---
-    packaging_cost_str = input("Packaging cost per unit (default 0.0): ").strip()
-    packaging_cost = float(packaging_cost_str) if packaging_cost_str else 0.0
+    # --- Costs — conditional on business model ---
+    packaging_cost: float = 0.0
+    courier_cost: float = 0.0
+    fulfillment_prep_cost: float = 0.0
 
-    courier_cost_str = input("Courier/shipping cost per unit (default 0.0): ").strip()
-    courier_cost = float(courier_cost_str) if courier_cost_str else 0.0
+    if business_model == "fulfilled_by_seller":
+        packaging_cost_str = input("Packaging cost per unit (default 0.0): ").strip()
+        packaging_cost = float(packaging_cost_str) if packaging_cost_str else 0.0
+
+        courier_cost_str = input("Courier/shipping cost per unit (default 0.0): ").strip()
+        courier_cost = float(courier_cost_str) if courier_cost_str else 0.0
+
+    elif business_model == "dropshipping":
+        print("Note: Dropshipping — supplier handles packaging and shipping directly to customer.")
+
+    else:  # fulfilled_by_marketplace
+        prep_str = input(
+            "Cost to ship bulk inventory to marketplace warehouse, per unit"
+            " (default 0.0): "
+        ).strip()
+        fulfillment_prep_cost = float(prep_str) if prep_str else 0.0
 
     # --- Province (only for Daraz Pakistan) ---
     user_input = {
@@ -103,6 +128,7 @@ def get_user_input() -> dict[str, Any]:
         "business_model": business_model,
         "packaging_cost": packaging_cost,
         "courier_cost": courier_cost,
+        "fulfillment_prep_cost": fulfillment_prep_cost,
     }
 
     if marketplace == "daraz_pk":

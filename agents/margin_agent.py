@@ -126,6 +126,10 @@ class MarginAgent(BaseAgent):
         # Packaging cost comes directly from user input in the Orchestrator
         packaging_cost: float = float(context.get("packaging_cost", 0.0))
 
+        # Cost to ship bulk inventory to the marketplace warehouse (FBM/FBA only).
+        # 0.0 for FBS and dropshipping — those models never populate this key.
+        fulfillment_prep_cost: float = self._extract_fulfillment_prep_cost(context)
+
         # Courier cost applies only when the seller ships — for FBM the marketplace
         # handles fulfilment and charges an FBA/WFS fee instead of courier cost.
         raw_courier: float = float(context.get("courier_cost", 0.0))
@@ -210,6 +214,7 @@ class MarginAgent(BaseAgent):
             supplier_cost
             + supplier_shipping_cost
             + packaging_cost
+            + fulfillment_prep_cost
             + courier_cost
             + commission_amount
             + commission_vat_amount
@@ -245,6 +250,7 @@ class MarginAgent(BaseAgent):
             supplier_cost=supplier_cost,
             supplier_shipping_cost=supplier_shipping_cost,
             packaging_cost=packaging_cost,
+            fulfillment_prep_cost=fulfillment_prep_cost,
             courier_cost=courier_cost,
             commission_pct=commission_pct,
             commission_amount=commission_amount,
@@ -276,6 +282,7 @@ class MarginAgent(BaseAgent):
                 "supplier_cost": supplier_cost,
                 "supplier_shipping_cost": supplier_shipping_cost,
                 "packaging_cost": packaging_cost,
+                "fulfillment_prep_cost": fulfillment_prep_cost,
                 "courier_cost": courier_cost,
                 "commission_amount": commission_amount,
                 "commission_vat_amount": commission_vat_amount,
@@ -431,6 +438,7 @@ class MarginAgent(BaseAgent):
         supplier_cost: float,
         supplier_shipping_cost: float,
         packaging_cost: float,
+        fulfillment_prep_cost: float,
         courier_cost: float,
         commission_pct: float,
         commission_amount: float,
@@ -465,6 +473,8 @@ class MarginAgent(BaseAgent):
                 (separate from the seller's own courier cost). Shown only
                 when > 0.0, immediately after the supplier cost line.
             packaging_cost: Seller-provided packaging cost per unit.
+            fulfillment_prep_cost: Cost to ship bulk inventory to the marketplace
+                warehouse, per unit (FBM/FBA only). ``0.0`` for all other models.
             courier_cost: Seller-provided courier cost (0 for FBM).
             commission_pct: Commission percentage applied to selling price.
             commission_amount: Calculated commission in currency units.
@@ -514,6 +524,11 @@ class MarginAgent(BaseAgent):
         # information and clutter the table for dropshipping runs where they are 0.
         if packaging_cost > 0.0:
             lines.append(f"  Packaging Cost:     - {symbol}{packaging_cost:>10.2f}")
+
+        if fulfillment_prep_cost > 0.0:
+            lines.append(
+                f"  Ship to Warehouse:  - {symbol}{fulfillment_prep_cost:>10.2f}"
+            )
 
         if courier_cost > 0.0:
             lines.append(f"  Courier / Shipping: - {symbol}{courier_cost:>10.2f}")
@@ -609,6 +624,27 @@ class MarginAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Supplier shipping cost helper
     # ------------------------------------------------------------------
+
+    def _extract_fulfillment_prep_cost(self, context: dict[str, Any]) -> float:
+        """Reads the fulfillment_prep_cost from context.
+
+        This value is only populated for the ``fulfilled_by_marketplace``
+        business model — it represents the per-unit cost of shipping bulk
+        inventory to the marketplace warehouse (e.g. Amazon FBA prep and
+        inbound freight). For ``dropshipping`` and ``fulfilled_by_seller`` the
+        key is absent or zero and this method returns ``0.0``.
+
+        Args:
+            context: Session context. Reads ``"fulfillment_prep_cost"`` key.
+
+        Returns:
+            The per-unit warehouse prep/shipping cost as a float, or ``0.0``
+            if the key is absent or the value cannot be converted.
+        """
+        try:
+            return float(context.get("fulfillment_prep_cost", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _extract_supplier_shipping_cost(self, context: dict[str, Any]) -> float:
         """Reads the recommended supplier's shipping_cost from supplier_result.
