@@ -18,6 +18,12 @@ from agents.base_agent import BaseAgent
 # Business models where the seller personally ships — courier cost is real
 _SELLER_SHIPS_MODELS: frozenset[str] = frozenset({"dropshipping", "fbs"})
 
+# Known acronyms that .title() would incorrectly capitalise (e.g. "Fba" → "FBA")
+_ACRONYM_OVERRIDES: dict[str, str] = {
+    "fba": "FBA",
+    "wfs": "WFS",
+}
+
 
 class MarginAgent(BaseAgent):
     """Calculates net margin from supplier cost, platform fees, and seller costs.
@@ -114,6 +120,8 @@ class MarginAgent(BaseAgent):
 
         selling_price: float = self._extract_selling_price(context, warnings)
         supplier_cost: float = self._extract_supplier_cost(context, currency, warnings)
+        # Shipping cost charged by the supplier (separate from seller's courier cost)
+        supplier_shipping_cost: float = self._extract_supplier_shipping_cost(context)
 
         # Packaging cost comes directly from user input in the Orchestrator
         packaging_cost: float = float(context.get("packaging_cost", 0.0))
@@ -185,10 +193,22 @@ class MarginAgent(BaseAgent):
             handling_fee_amount * (vat_on_handling_fee_pct / 100), 2
         )
 
-        # Total deductions: every cost and fee on a single line
-        # The order matches the spec worked example for readability
+        # Platform-specific fees (FBA fulfilment, WFS, Etsy offsite ads, etc.)
+        # Computed here so the total is available for total_deductions below.
+        platform_specific_fees: dict[str, Any] = fee_data.get(
+            "platform_specific_fees", {}
+        )
+        platform_specific_total, platform_specific_lines = (
+            self._calculate_platform_specific_total(
+                platform_specific_fees, selling_price, symbol
+            )
+        )
+
+        # Total deductions: every cost and fee on a single line.
+        # Order: supplier costs → seller costs → platform fees → platform-specific.
         total_deductions: float = round(
             supplier_cost
+            + supplier_shipping_cost
             + packaging_cost
             + courier_cost
             + commission_amount
@@ -196,7 +216,8 @@ class MarginAgent(BaseAgent):
             + payment_processing_amount
             + payment_processing_vat_amount
             + handling_fee_amount
-            + handling_fee_vat_amount,
+            + handling_fee_vat_amount
+            + platform_specific_total,
             2,
         )
 
@@ -222,6 +243,7 @@ class MarginAgent(BaseAgent):
             symbol=symbol,
             selling_price=selling_price,
             supplier_cost=supplier_cost,
+            supplier_shipping_cost=supplier_shipping_cost,
             packaging_cost=packaging_cost,
             courier_cost=courier_cost,
             commission_pct=commission_pct,
@@ -235,6 +257,7 @@ class MarginAgent(BaseAgent):
             handling_fee_amount=handling_fee_amount,
             vat_on_handling_fee_pct=vat_on_handling_fee_pct,
             handling_fee_vat_amount=handling_fee_vat_amount,
+            platform_specific_lines=platform_specific_lines,
             total_deductions=total_deductions,
             net_profit_per_unit=net_profit_per_unit,
             margin_pct=margin_pct,
@@ -251,6 +274,7 @@ class MarginAgent(BaseAgent):
                 "business_model": business_model,
                 "selling_price": selling_price,
                 "supplier_cost": supplier_cost,
+                "supplier_shipping_cost": supplier_shipping_cost,
                 "packaging_cost": packaging_cost,
                 "courier_cost": courier_cost,
                 "commission_amount": commission_amount,
@@ -259,6 +283,7 @@ class MarginAgent(BaseAgent):
                 "payment_processing_vat_amount": payment_processing_vat_amount,
                 "handling_fee_amount": handling_fee_amount,
                 "handling_fee_vat_amount": handling_fee_vat_amount,
+                "platform_specific_fees_total": platform_specific_total,
                 "total_deductions": total_deductions,
                 "net_profit_per_unit": net_profit_per_unit,
                 "margin_pct": margin_pct,
@@ -404,6 +429,7 @@ class MarginAgent(BaseAgent):
         symbol: str,
         selling_price: float,
         supplier_cost: float,
+        supplier_shipping_cost: float,
         packaging_cost: float,
         courier_cost: float,
         commission_pct: float,
@@ -417,6 +443,7 @@ class MarginAgent(BaseAgent):
         handling_fee_amount: float,
         vat_on_handling_fee_pct: float,
         handling_fee_vat_amount: float,
+        platform_specific_lines: list[str],
         total_deductions: float,
         net_profit_per_unit: float,
         margin_pct: float,
@@ -434,6 +461,9 @@ class MarginAgent(BaseAgent):
             symbol: Currency symbol or code prepended to each monetary value.
             selling_price: The estimated selling price.
             supplier_cost: Unit cost from the recommended supplier.
+            supplier_shipping_cost: Shipping cost charged by the supplier
+                (separate from the seller's own courier cost). Shown only
+                when > 0.0, immediately after the supplier cost line.
             packaging_cost: Seller-provided packaging cost per unit.
             courier_cost: Seller-provided courier cost (0 for FBM).
             commission_pct: Commission percentage applied to selling price.
@@ -447,6 +477,10 @@ class MarginAgent(BaseAgent):
             handling_fee_amount: Flat handling fee (tiered for Daraz, 0 or flat others).
             vat_on_handling_fee_pct: VAT rate on handling fee (0 for US).
             handling_fee_vat_amount: Calculated VAT on handling fee.
+            platform_specific_lines: Pre-formatted breakdown strings for
+                marketplace-specific fees (FBA, WFS, etc.) produced by
+                ``_calculate_platform_specific_total``. Inserted after the
+                handling-fee-VAT line, before the summary separator.
             total_deductions: Sum of all cost and fee items.
             net_profit_per_unit: Selling price minus total deductions.
             margin_pct: Net profit as percentage of selling price.
@@ -455,7 +489,7 @@ class MarginAgent(BaseAgent):
 
         Returns:
             A list of strings, each representing one line in the breakdown table.
-            Lines are ordered: selling price → costs → fees → summary.
+            Lines are ordered: selling price → costs → fees → platform fees → summary.
         """
         lines: list[str] = []
         sep = "─" * 44
@@ -468,6 +502,13 @@ class MarginAgent(BaseAgent):
 
         # --- Cost section ---
         lines.append(f"  Supplier Cost:      - {symbol}{supplier_cost:>10.2f}")
+
+        # Shipping from supplier: separate from the seller's own courier cost.
+        # Only shown when the supplier reported a non-zero shipping charge.
+        if supplier_shipping_cost > 0.0:
+            lines.append(
+                f"  Shipping from Supplier: - {symbol}{supplier_shipping_cost:>10.2f}"
+            )
 
         # Only include packaging and courier when non-zero — zero values add no
         # information and clutter the table for dropshipping runs where they are 0.
@@ -526,6 +567,10 @@ class MarginAgent(BaseAgent):
                 f"- {symbol}{handling_fee_vat_amount:>10.2f}"
             )
 
+        # --- Platform-specific fee lines (FBA, WFS, Etsy offsite ads, etc.) ---
+        # Pre-computed by _calculate_platform_specific_total; empty list when none apply.
+        lines.extend(platform_specific_lines)
+
         # --- Summary section ---
         lines.append(sep)
         lines.append(
@@ -560,6 +605,124 @@ class MarginAgent(BaseAgent):
         """
         marketplace: str = context.get("marketplace", "").strip()
         return "PKR " if marketplace == "daraz_pk" else "$"
+
+    # ------------------------------------------------------------------
+    # Supplier shipping cost helper
+    # ------------------------------------------------------------------
+
+    def _extract_supplier_shipping_cost(self, context: dict[str, Any]) -> float:
+        """Reads the recommended supplier's shipping_cost from supplier_result.
+
+        Matches the recommended supplier by name in the suppliers list and
+        returns their ``shipping_cost`` field. Returns 0.0 when the supplier is
+        not found, has no shipping cost, or supplier_result is absent — the
+        caller suppresses 0.0 lines so the breakdown stays clean.
+
+        Args:
+            context: Session context containing ``supplier_result``.
+
+        Returns:
+            The supplier's per-shipment or per-unit shipping cost as a float,
+            or ``0.0`` if not available.
+        """
+        supplier_result: dict = context.get("supplier_result", {})
+        suppliers: list[dict] = supplier_result.get("suppliers", [])
+        recommended_name: str = supplier_result.get("recommended_supplier", "")
+
+        for supplier in suppliers:
+            if supplier.get("name", "") == recommended_name:
+                return float(supplier.get("shipping_cost", 0.0))
+
+        # Fall back to first supplier when no name match
+        if suppliers:
+            return float(suppliers[0].get("shipping_cost", 0.0))
+
+        return 0.0
+
+    # ------------------------------------------------------------------
+    # Platform-specific fees helper
+    # ------------------------------------------------------------------
+
+    def _calculate_platform_specific_total(
+        self,
+        platform_specific_fees: dict[str, Any],
+        selling_price: float,
+        symbol: str,
+    ) -> tuple[float, list[str]]:
+        """Calculates the total and breakdown lines for platform-specific fees.
+
+        Processes the ``platform_specific_fees`` dict from FeeAgent output.
+        Three kinds of keys are recognised:
+        - ``*_usd`` (but NOT ``*_monthly_usd``): flat fee, added directly.
+        - ``*_pct``: percentage of selling price, ``selling_price * (value / 100)``.
+        - ``*_monthly_usd``: subscription fees — skipped, not per-unit costs.
+
+        Args:
+            platform_specific_fees: Dict of fee keys to numeric values, as
+                returned by FeeAgent under the ``platform_specific_fees`` key.
+                Example keys: ``fba_fulfillment_fee_usd``, ``fba_fuel_surcharge_pct``,
+                ``professional_plan_monthly_usd``.
+            selling_price: The unit selling price, used to compute
+                percentage-based fees.
+            symbol: Currency symbol prepended to each monetary value in the
+                returned breakdown lines.
+
+        Returns:
+            A tuple of:
+            - ``total`` (float): Sum of all applicable platform-specific fees,
+              rounded to 2 decimal places.
+            - ``lines`` (list[str]): One formatted string per fee, ready to be
+              inserted into the calculation breakdown. Empty when no fees apply.
+        """
+        total: float = 0.0
+        lines: list[str] = []
+
+        for key, value in platform_specific_fees.items():
+            try:
+                amount: float = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if key.endswith("_monthly_usd"):
+                # Subscription / plan fees are not per-unit costs — skip them.
+                continue
+
+            if key.endswith("_usd"):
+                fee_amount = round(amount, 2)
+                label = self._fee_key_to_label(key, suffix="_usd")
+                lines.append(f"  {label}: - {symbol}{fee_amount:>10.2f}")
+                total += fee_amount
+
+            elif key.endswith("_pct"):
+                fee_amount = round(selling_price * (amount / 100), 2)
+                label = self._fee_key_to_label(key, suffix="_pct")
+                lines.append(
+                    f"  {label} ({amount:.2f}%): - {symbol}{fee_amount:>10.2f}"
+                )
+                total += fee_amount
+
+        return round(total, 2), lines
+
+    @staticmethod
+    def _fee_key_to_label(key: str, suffix: str) -> str:
+        """Converts a fee dict key into a human-readable label.
+
+        Strips the given suffix, replaces underscores with spaces, and
+        title-cases the result. For example:
+        ``"fba_fulfillment_fee_usd"`` → ``"FBA Fulfillment Fee"``
+        ``"offsite_ads_fee_pct"``     → ``"Offsite Ads Fee"``
+
+        Args:
+            key: The raw fee key from FeeAgent output.
+            suffix: The suffix to strip (``"_usd"`` or ``"_pct"``).
+
+        Returns:
+            A title-cased human-readable label string.
+        """
+        base = key[: -len(suffix)] if key.endswith(suffix) else key
+        words = base.replace("_", " ").title().split()
+        words = [_ACRONYM_OVERRIDES.get(w.lower(), w) for w in words]
+        return " ".join(words)
 
     # ------------------------------------------------------------------
     # Monthly projection helper
