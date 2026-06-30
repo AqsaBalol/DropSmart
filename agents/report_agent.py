@@ -70,11 +70,15 @@ class ReportAgent(BaseAgent):
     - ``risk_summary_text``: str — (Gemini)
     - ``listing_title_draft``: str — SEO-optimised, uses top_keywords (Gemini)
     - ``listing_description_draft``: str — 3–4 sentences (Gemini)
+    - ``verdict_reasoning``: list[str] — 3–5 emoji-prefixed reasoning points (Gemini)
+    - ``recommended_strategy``: list[str] — 3–4 actionable strategy bullets (Gemini)
+    - ``listing_bullets``: list[str] — exactly 5 benefit-focused listing bullets (Gemini)
     - ``recommended_selling_price``: float — avg_market_price from competitor_result
     - ``calculation_breakdown``: list[str] — copied from margin_result
     - ``generated_at``: str — ISO 8601 datetime of report generation
     - ``report_format``: str — always ``"text"``
     - ``report_filepath``: str — absolute path of the saved JSON file
+    - ``formatted_report``: str — complete formatted text block (all 8 sections)
     """
 
     def __init__(self) -> None:
@@ -158,6 +162,10 @@ class ReportAgent(BaseAgent):
             "listing_description_draft": gemini_fields.get(
                 "listing_description_draft", ""
             ),
+            # New narrative list fields (Gemini-generated or fallback)
+            "verdict_reasoning": gemini_fields.get("verdict_reasoning", []),
+            "recommended_strategy": gemini_fields.get("recommended_strategy", []),
+            "listing_bullets": gemini_fields.get("listing_bullets", []),
             # Deterministic fields copied from earlier agent outputs
             "recommended_selling_price": recommended_selling_price,
             "calculation_breakdown": calculation_breakdown,
@@ -168,6 +176,11 @@ class ReportAgent(BaseAgent):
         # --- Persist to disk ---
         filepath: str = self._save_report_to_file(report, context)
         report["report_filepath"] = filepath
+
+        # Formatted text report assembled after file save so the JSON stays compact
+        report["formatted_report"] = self._render_formatted_report(
+            context, gemini_fields
+        )
 
         self._log_end("report generation", success=True)
 
@@ -216,10 +229,15 @@ class ReportAgent(BaseAgent):
         competitor_result: dict = context.get("competitor_result", {})
         avg_price: float = competitor_result.get("avg_market_price", 0.0)
         price_range: dict = competitor_result.get("price_range", {})
-        top_keywords: list[str] = competitor_result.get("top_keywords", [])
+        # top_keywords is a list of {keyword, volume_signal} dicts (CompetitorAgent v2)
+        # or a legacy list of plain strings — handle both formats safely.
+        top_keywords_raw: list = competitor_result.get("top_keywords", [])
         market_saturation: str = competitor_result.get("market_saturation", "unknown")
         # Pass at most 5 keywords — more than that dilutes the title instruction
-        keywords_str: str = ", ".join(top_keywords[:5]) or "none available"
+        keywords_str: str = ", ".join(
+            k.get("keyword", str(k)) if isinstance(k, dict) else str(k)
+            for k in top_keywords_raw[:5]
+        ) or "none available"
 
         # --- Fee data ---
         fee_result: dict = context.get("fee_result", {})
@@ -299,8 +317,18 @@ class ReportAgent(BaseAgent):
             '  "margin_summary_text": "<2 sentences: net profit per unit, margin %, and break-even price>",\n'
             '  "risk_summary_text": "<2-3 sentences: overall risk level, top risks, what to watch>",\n'
             f'  "listing_title_draft": "<SEO-optimised title under {_MAX_TITLE_CHARS} characters incorporating these keywords: {keywords_str}>",\n'
-            '  "listing_description_draft": "<3-4 sentence product description that highlights key features and targets buyer intent>"\n'
-            "}"
+            '  "listing_description_draft": "<3-4 sentence product description that highlights key features and targets buyer intent>",\n'
+            '  "verdict_reasoning": ["✅ <positive point backed by data above>", "⚠️ <caution point backed by data above>"],\n'
+            '  "recommended_strategy": ["<actionable step 1>", "<actionable step 2>", "<actionable step 3>"],\n'
+            '  "listing_bullets": ["<benefit 1, under 100 chars>", "<benefit 2>", "<benefit 3>", "<benefit 4>", "<benefit 5>"]\n'
+            "}\n\n"
+            "Additional rules for the three new list fields:\n"
+            "- verdict_reasoning: 3-5 strings. Prefix ✅ for positives, ⚠️ for cautions/risks, ❌ for blockers. "
+            "Base ONLY on the data provided above — do not invent reasons.\n"
+            "- recommended_strategy: 3-4 short actionable bullet strings. "
+            "Derive from risk level, margin thinness, and saturation signals above. No emoji prefix.\n"
+            f"- listing_bullets: EXACTLY 5 strings, each under 100 characters, benefit-focused. "
+            f"Naturally incorporate relevant keywords from: {keywords_str}."
         )
 
         return prompt
@@ -400,8 +428,12 @@ class ReportAgent(BaseAgent):
         competitor_result: dict = context.get("competitor_result", {})
         avg_price: float = competitor_result.get("avg_market_price", 0.0)
         market_saturation: str = competitor_result.get("market_saturation", "unknown")
-        top_keywords: list[str] = competitor_result.get("top_keywords", [])
-        keywords_str: str = ", ".join(top_keywords[:5])
+        # top_keywords may be a list of dicts or legacy strings — handle both
+        top_keywords_raw: list = competitor_result.get("top_keywords", [])
+        keywords_str: str = ", ".join(
+            k.get("keyword", str(k)) if isinstance(k, dict) else str(k)
+            for k in top_keywords_raw[:5]
+        )
 
         # --- Fees ---
         fee_result: dict = context.get("fee_result", {})
@@ -481,6 +513,17 @@ class ReportAgent(BaseAgent):
                 f"{keywords_line} "
                 "Order today for fast, reliable delivery."
             ).strip(),
+            # New list fields — minimal fallback values used when Gemini is unavailable
+            "verdict_reasoning": (
+                [f"⚠️ {r}" for r in top_risks[:5]]
+                or ["⚠️ Full risk assessment not available — review data manually."]
+            ),
+            "recommended_strategy": [
+                "Review the full risk and margin data before proceeding."
+            ],
+            "listing_bullets": [
+                f"{product_name} — quality product, competitively priced."
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -545,3 +588,394 @@ class ReportAgent(BaseAgent):
             return ""
 
         return filepath
+
+    # ------------------------------------------------------------------
+    # Label and symbol helpers (local copies — no import from MarginAgent)
+    # ------------------------------------------------------------------
+
+    def _get_currency_symbol(self, context: dict[str, Any]) -> str:
+        """Returns the display currency symbol for the target marketplace.
+
+        Mirrors ``MarginAgent._get_currency_symbol`` — duplicated here so
+        ``ReportAgent`` has no dependency on another agent module.
+
+        Args:
+            context: Session context. Reads ``"marketplace"`` key.
+
+        Returns:
+            ``"PKR "`` (with trailing space) for ``daraz_pk``,
+            ``"$"`` (no space) for all other marketplaces.
+        """
+        marketplace: str = context.get("marketplace", "").strip()
+        return "PKR " if marketplace == "daraz_pk" else "$"
+
+    @staticmethod
+    def _get_marketplace_label(marketplace: str) -> str:
+        """Maps a marketplace code to a human-readable display name.
+
+        Args:
+            marketplace: Internal marketplace code from session context,
+                e.g. ``"daraz_pk"``.
+
+        Returns:
+            Display name such as ``"Daraz Pakistan"``, or the raw code
+            as a fallback when the code is not recognised.
+        """
+        labels: dict[str, str] = {
+            "daraz_pk":   "Daraz Pakistan",
+            "walmart_us": "Walmart USA",
+            "amazon_us":  "Amazon USA",
+            "etsy_us":    "Etsy USA",
+        }
+        return labels.get(marketplace, marketplace)
+
+    @staticmethod
+    def _get_business_model_label(business_model: str) -> str:
+        """Maps a business model code to a human-readable display name.
+
+        Args:
+            business_model: Internal business model code from session context,
+                e.g. ``"dropshipping"``.
+
+        Returns:
+            Display name such as ``"Dropshipping"``, or the raw code as a
+            fallback when the code is not recognised.
+        """
+        labels: dict[str, str] = {
+            "dropshipping":              "Dropshipping",
+            "fulfilled_by_seller":       "Fulfilled by Seller (FBS)",
+            "fulfilled_by_marketplace":  "Fulfilled by Marketplace (FBM/FBA)",
+        }
+        return labels.get(business_model, business_model)
+
+    # ------------------------------------------------------------------
+    # Formatted report renderer
+    # ------------------------------------------------------------------
+
+    def _render_formatted_report(
+        self,
+        context: dict[str, Any],
+        report_data: dict[str, Any],
+    ) -> str:
+        """Assembles all pipeline data into a single formatted text report.
+
+        Reads supplier, competitor, margin, and risk results from ``context``
+        and Gemini/fallback narrative fields from ``report_data``, then
+        produces a human-readable multi-section text block using box-drawing
+        characters.  All data access uses ``.get()`` with safe defaults so
+        this method never raises regardless of what is present in context.
+
+        Args:
+            context: Complete session context after all agents have run.
+                Keys read: ``product_name``, ``marketplace``,
+                ``business_model`` / ``business_model_alias``,
+                ``supplier_result``, ``competitor_result``,
+                ``margin_result``, ``risk_result``.
+            report_data: The Gemini-generated (or fallback) narrative dict.
+                Keys read: ``verdict_reasoning``, ``recommended_strategy``,
+                ``listing_bullets``, ``listing_title_draft``.
+
+        Returns:
+            A formatted multi-line string covering 8 sections:
+            supplier intelligence, competitor analysis, trends & seasonality,
+            margin calculation, risk assessment, final verdict, and listing
+            draft.  Each section is delimited by ``━`` separator lines.
+        """
+        SEP: str = "━" * 43
+        lines: list[str] = []
+
+        def _section(title: str) -> None:
+            lines.extend(["", SEP, title, SEP])
+
+        # ── Common context values ─────────────────────────────────────────
+        product_name: str = context.get("product_name", "Unknown Product")
+        marketplace: str = context.get("marketplace", "unknown")
+        business_model: str = context.get(
+            "business_model_alias", context.get("business_model", "fbs")
+        )
+        marketplace_label: str = self._get_marketplace_label(marketplace)
+        bm_label: str = self._get_business_model_label(business_model)
+        symbol: str = self._get_currency_symbol(context)
+        price_key: str = "price_pkr" if marketplace == "daraz_pk" else "price_usd"
+
+        # ── 1. Title box ──────────────────────────────────────────────────
+        lines.extend([
+            "╔═══════════════════════════════════════════╗",
+            "║         DROPSMART INTELLIGENCE REPORT      ║",
+            f"║   {marketplace_label} | {bm_label} | {product_name}",
+            "╚═══════════════════════════════════════════╝",
+        ])
+
+        # ── 2. Supplier Intelligence ───────────────────────────────────────
+        _section("📦 SUPPLIER INTELLIGENCE")
+        supplier_result: dict = context.get("supplier_result", {})
+        suppliers: list[dict] = supplier_result.get("suppliers", [])
+        recommended_supplier: str = supplier_result.get("recommended_supplier", "")
+
+        _RISK_EMOJI: dict[str, str] = {
+            "LOW": "✅", "MEDIUM": "⚠️", "HIGH": "❌"
+        }
+
+        if not suppliers:
+            lines.append("No suppliers found — manual sourcing required.")
+        else:
+            n_sup: int = min(3, len(suppliers))
+            lines.append(f"Top {n_sup} Suppliers Found:")
+            for idx, sup in enumerate(suppliers[:3], 1):
+                name: str = str(sup.get("name", "N/A"))
+                raw_price = sup.get(price_key)
+                price_display: str = (
+                    f"{symbol}{float(raw_price):.2f}"
+                    if isinstance(raw_price, (int, float))
+                    else (f"{symbol}{raw_price}" if raw_price else "N/A")
+                )
+                moq: str = str(sup.get("moq", "N/A"))
+                shipping_cost: float = float(sup.get("shipping_cost", 0.0))
+                shipping_days = sup.get("shipping_days", "N/A")
+                rating = sup.get("rating")
+                review_count = sup.get("review_count")
+                risk_label: str = str(sup.get("risk_label", "UNKNOWN")).upper()
+                r_emoji: str = _RISK_EMOJI.get(risk_label, "")
+
+                lines.append(f"  {idx}. {name}")
+                lines.append(f"     Price: {price_display}  |  MOQ: {moq}")
+                lines.append(
+                    f"     Shipping: {symbol}{shipping_cost:.2f}"
+                    f"  |  Delivery: {shipping_days} days"
+                )
+                if rating is not None:
+                    rating_line: str = f"     Rating: {rating}"
+                    if review_count is not None:
+                        rating_line += f" ({review_count} reviews)"
+                    lines.append(rating_line)
+                risk_line: str = f"     Risk: {risk_label}"
+                if r_emoji:
+                    risk_line += f" {r_emoji}"
+                lines.append(risk_line)
+
+            lines.append(f"Recommended Supplier: {recommended_supplier}")
+
+        # ── 3. Competitor Analysis ─────────────────────────────────────────
+        _section(f"🏆 COMPETITOR ANALYSIS — {marketplace_label}")
+        competitor_result: dict = context.get("competitor_result", {})
+        price_range: dict = competitor_result.get("price_range", {})
+        sweet_spot: dict = competitor_result.get("sweet_spot_price_range", {})
+        listings: list[dict] = competitor_result.get("listings", [])
+        perf_metrics: dict = competitor_result.get("performance_metrics", {})
+        market_leader: str = str(competitor_result.get("market_leader", "") or "")
+
+        total_listings = competitor_result.get("total_active_listings", "N/A")
+        lines.append(f"Total Active Listings: {total_listings}")
+
+        pr_min = price_range.get("min")
+        pr_max = price_range.get("max")
+        if isinstance(pr_min, (int, float)) and isinstance(pr_max, (int, float)):
+            lines.append(
+                f"Price Range: {symbol}{float(pr_min):.2f}"
+                f" – {symbol}{float(pr_max):.2f}"
+            )
+        else:
+            lines.append("Price Range: N/A")
+
+        ss_min = sweet_spot.get("min")
+        ss_max = sweet_spot.get("max")
+        if isinstance(ss_min, (int, float)) and isinstance(ss_max, (int, float)):
+            lines.append(
+                f"Sweet Spot Price: {symbol}{float(ss_min):.2f}"
+                f" – {symbol}{float(ss_max):.2f}"
+            )
+
+        if listings:
+            lines.append("Top 3 Competitors:")
+            for idx, listing in enumerate(listings[:3], 1):
+                l_title: str = str(listing.get("title", "N/A"))
+                raw_lp = listing.get("price")
+                lp_str: str = (
+                    f"{symbol}{float(raw_lp):.2f}"
+                    if isinstance(raw_lp, (int, float))
+                    else (str(raw_lp) if raw_lp else "N/A")
+                )
+                l_rating = listing.get("rating", "N/A")
+                l_reviews = listing.get("review_count", "N/A")
+                lines.append(f"  {idx}. {l_title}")
+                lines.append(
+                    f"     Price: {lp_str}"
+                    f"  |  Rating: {l_rating}"
+                    f"  |  Reviews: {l_reviews}"
+                )
+
+        if perf_metrics:
+            lines.append("Performance Metrics:")
+            lines.append(
+                f"  Est. Monthly Sales:"
+                f" {perf_metrics.get('estimated_monthly_sales_range', 'N/A')}"
+            )
+            lines.append(
+                f"  Avg Rating (Top Sellers):"
+                f" {perf_metrics.get('avg_rating_to_rank', 'N/A')}"
+            )
+            lines.append(
+                f"  Avg Reviews (Top Sellers):"
+                f" {perf_metrics.get('avg_review_count_top_sellers', 'N/A')}"
+            )
+            lines.append(f"  Market Leader: {market_leader or 'N/A'}")
+
+        # Platform-advantage warning when the market leader name signals
+        # a first-party or programme-backed seller.
+        if market_leader:
+            _ML_SIGNALS: frozenset[str] = frozenset(
+                {"mall", "choice", "basics", "official"}
+            )
+            if any(sig in market_leader.lower() for sig in _ML_SIGNALS):
+                lines.append(
+                    "⚠️  WARNING: Market leader may have platform-level advantages."
+                    " You must compete on price or unique feature."
+                )
+
+        # ── 4. Trends & Seasonality ────────────────────────────────────────
+        _section("📈 TRENDS & SEASONALITY")
+        trends: dict = competitor_result.get("trends_and_seasonality", {})
+        trend_direction: str = str(
+            trends.get("trend_direction", "unknown")
+        ).strip().lower()
+        product_type: str = str(
+            trends.get("product_type", "unknown")
+        ).strip().lower()
+        peak_months: list = trends.get("peak_season_months", [])
+        demand_signal: str = str(
+            trends.get("current_month_demand_signal", "unknown")
+        ).strip()
+        top_keywords: list = competitor_result.get("top_keywords", [])
+
+        _TREND_EMOJI: dict[str, str] = {
+            "growing": "📈", "stable": "➡️", "declining": "📉"
+        }
+        _TYPE_EMOJI: dict[str, str] = {
+            "evergreen": "✅", "seasonal": "🌊", "fad": "⚡"
+        }
+        lines.append(
+            f"Trend Direction: {_TREND_EMOJI.get(trend_direction, '❓')}"
+            f" {trend_direction.title()}"
+        )
+        lines.append(
+            f"Product Type: {_TYPE_EMOJI.get(product_type, '❓')}"
+            f" {product_type.title()}"
+        )
+
+        if peak_months:
+            lines.append("Peak Seasons:")
+            for month in peak_months:
+                lines.append(f"  🔥 {month}")
+        else:
+            lines.append("Peak Seasons: No clear peak season identified.")
+
+        lines.append(f"Current Month Demand: {demand_signal.title()}")
+
+        if top_keywords:
+            lines.append(f"High-Volume Keywords ({marketplace_label}):")
+            for idx, kw in enumerate(top_keywords, 1):
+                if isinstance(kw, dict):
+                    kw_text: str = kw.get("keyword", str(kw))
+                    vol: str = str(kw.get("volume_signal", "N/A"))
+                    lines.append(f"  {idx}. {kw_text} — {vol} volume")
+                else:
+                    lines.append(f"  {idx}. {kw}")
+
+        # ── 5. Margin Calculation ──────────────────────────────────────────
+        _section(f"💰 MARGIN CALCULATION — {marketplace_label} {bm_label}")
+        margin_result: dict = context.get("margin_result", {})
+        selling_price: float = float(margin_result.get("selling_price", 0.0))
+        breakdown: list[str] = margin_result.get("calculation_breakdown", [])
+        monthly: dict = margin_result.get("monthly_profit_potential", {})
+
+        lines.append(f"Recommended Selling Price: {symbol}{selling_price:.2f}")
+        lines.append("")
+        lines.extend(breakdown)
+
+        if monthly:
+            lines.append("")
+            lines.append("Monthly Profit Potential:")
+            lines.append(
+                f"   50 units/month → {symbol}"
+                f"{float(monthly.get('50_units', 0.0)):.2f}"
+            )
+            lines.append(
+                f"  100 units/month → {symbol}"
+                f"{float(monthly.get('100_units', 0.0)):.2f}"
+            )
+            lines.append(
+                f"  200 units/month → {symbol}"
+                f"{float(monthly.get('200_units', 0.0)):.2f}"
+            )
+
+        # ── 6. Risk Assessment ─────────────────────────────────────────────
+        _section("⚠️  RISK ASSESSMENT")
+        risk_result: dict = context.get("risk_result", {})
+        risk_dimensions: dict = risk_result.get("risk_dimensions", {})
+
+        _DIM_ORDER: list[str] = [
+            "market_saturation_risk",
+            "supplier_risk",
+            "margin_risk",
+            "competition_risk",
+            "trend_risk",
+            "seasonality_risk",
+        ]
+        _LEVEL_EMOJI: dict[str, str] = {
+            "low": "✅", "medium": "⚠️", "high": "❌"
+        }
+
+        for dim_key in _DIM_ORDER:
+            dim: dict = risk_dimensions.get(dim_key, {})
+            if dim:
+                dim_label: str = dim_key.replace("_", " ").title()
+                level: str = str(dim.get("level", "unknown"))
+                l_emoji: str = _LEVEL_EMOJI.get(level.lower(), "")
+                lines.append(f"  {dim_label}: {level.upper()} {l_emoji}")
+
+        overall_level: str = risk_result.get("overall_risk_level", "unknown").upper()
+        risk_score: int = int(risk_result.get("risk_score", 0))
+        lines.append(f"Overall Risk Score: {overall_level} ({risk_score}/100)")
+
+        # ── 7. Final Verdict ───────────────────────────────────────────────
+        _section("🎯 FINAL VERDICT")
+        go_no_go: str = risk_result.get("go_no_go_signal", "CAUTION")
+        _VERDICT_EMOJI: dict[str, str] = {
+            "GO": "✅", "CAUTION": "⚠️", "NO-GO": "❌"
+        }
+        lines.append(f"Decision: {_VERDICT_EMOJI.get(go_no_go, '⚠️')} {go_no_go}")
+
+        verdict_reasoning: list = report_data.get("verdict_reasoning", [])
+        if verdict_reasoning:
+            lines.append("Reasoning:")
+            for reason in verdict_reasoning:
+                lines.append(f"  {reason}")
+
+        recommended_strategy: list = report_data.get("recommended_strategy", [])
+        if recommended_strategy:
+            lines.append("Recommended Strategy:")
+            for step in recommended_strategy:
+                lines.append(f"  → {step}")
+
+        # ── 8. Listing Draft ───────────────────────────────────────────────
+        _section(f"📝 LISTING DRAFT — OPTIMIZED FOR {marketplace_label.upper()}")
+        listing_title: str = str(
+            report_data.get("listing_title_draft", product_name)
+        )
+        lines.append(f'Title (75 chars max): "{listing_title}"')
+
+        listing_bullets: list = report_data.get("listing_bullets", [])
+        if listing_bullets:
+            lines.append("Key Bullets:")
+            for bullet in listing_bullets:
+                lines.append(f"  - {bullet}")
+
+        top_5_kw: list = top_keywords[:5]
+        kw_display: list[str] = [
+            kw.get("keyword", str(kw)) if isinstance(kw, dict) else str(kw)
+            for kw in top_5_kw
+        ]
+        if kw_display:
+            lines.append(f"High-Volume Keywords Used: {' | '.join(kw_display)}")
+
+        return "\n".join(lines)
