@@ -36,8 +36,9 @@ if not _SERPER_API_KEY:
 # Constants
 # ---------------------------------------------------------------------------
 
-# Serper.dev search endpoint
+# Serper.dev search endpoints
 _SERPER_URL: str = "https://google.serper.dev/search"
+_SERPER_SHOPPING_URL: str = "https://google.serper.dev/shopping"
 
 # Maximum results the API will return per query
 _MAX_RESULTS: int = 10
@@ -202,6 +203,82 @@ def _call_serper(query: str, num_results: int) -> list[dict[str, Any]]:
                 "snippet": item.get("snippet", ""),
                 "url": item.get("link", ""),
                 "date": item.get("date", ""),  # Serper includes this when available
+            }
+        )
+
+    return normalised
+
+
+# ---------------------------------------------------------------------------
+# Serper.dev Shopping API helper
+# ---------------------------------------------------------------------------
+
+def _call_serper_shopping(
+    query: str,
+    gl: str,
+    num_results: int,
+) -> list[dict[str, Any]]:
+    """Sends a query to the Serper.dev Shopping API and returns normalised results.
+
+    Uses the ``/shopping`` endpoint (distinct from the ``/search`` organic endpoint)
+    which returns structured product listings with price, source, and rating data
+    rather than web page snippets.
+
+    Args:
+        query: The product search query string.
+        gl: Google country code for the search locale (e.g. ``"us"``, ``"pk"``).
+        num_results: How many shopping results to request. Unlike the organic
+            ``_call_serper`` helper this does NOT cap at ``_MAX_RESULTS`` because
+            the shopping endpoint supports higher counts and callers need a
+            larger pool before source-filtering reduces the set.
+
+    Returns:
+        A list of normalised result dicts, each containing:
+        ``title`` (str), ``source`` (str), ``price`` (str), ``link`` (str),
+        ``rating`` (float or None), ``rating_count`` (int or None).
+        ``imageUrl`` is intentionally excluded — it is a large base64 string
+        with no extraction value for downstream agents.
+
+    Raises:
+        RuntimeError: If the rate limit is reached or Serper returns a
+            non-200 HTTP status.
+    """
+    # Enforce the shared sliding-window rate limit before every outbound call
+    _check_rate_limit()
+
+    payload = {"q": query, "gl": gl, "num": num_results}
+    headers = {
+        "X-API-KEY": _SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(
+        _SERPER_SHOPPING_URL, json=payload, headers=headers, timeout=15
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Serper Shopping API returned HTTP {response.status_code}: "
+            f"{response.text[:200]}"
+        )
+
+    data = response.json()
+
+    # Extract the shopping results array; fall back to empty list if absent
+    raw_results: list[dict] = data.get("shopping", [])
+
+    normalised: list[dict[str, Any]] = []
+    for item in raw_results:
+        raw_rating = item.get("rating")
+        raw_count = item.get("ratingCount")
+        normalised.append(
+            {
+                "title": str(item.get("title", "")),
+                "source": str(item.get("source", "")),
+                "price": str(item.get("price", "")),
+                "link": str(item.get("link", "")),
+                "rating": float(raw_rating) if raw_rating is not None else None,
+                "rating_count": int(raw_count) if raw_count is not None else None,
             }
         )
 
@@ -540,6 +617,132 @@ def search_competitor_listings(
 
     except Exception:
         _log_tool_response("search_competitor_listings", "error", 0)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: search_competitor_listings_live
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def search_competitor_listings_live(
+    product: str,
+    marketplace: str,
+    region: str,
+) -> list[dict[str, Any]]:
+    """Fetches live competitor product listings from Google Shopping for a marketplace.
+
+    Uses the Serper.dev ``/shopping`` endpoint instead of the organic ``/search``
+    endpoint so results carry structured price, rating, and source fields rather
+    than plain text snippets.  This makes price extraction and listing comparison
+    deterministic rather than requiring text parsing.
+
+    **Source filtering**
+
+    Each marketplace is mapped to a source-name substring (e.g. ``"amazon"``).
+    After fetching 30 raw shopping results the tool keeps only those whose
+    ``source`` field (lowercased) contains the mapped substring, so only listings
+    from the target platform are returned.
+
+    **Off-marketplace fallback**
+
+    When fewer than 3 on-marketplace results survive the filter the tool
+    supplements the list with up to 5 additional results from the unfiltered
+    pool (deduplicated by link).  Each supplemental item carries an extra
+    ``"off_marketplace": True`` key so downstream agents can distinguish
+    comparison data from genuine target-marketplace listings.
+
+    Args:
+        product: Product name or description. Must be non-empty, max 200 characters.
+        marketplace: One of ``daraz_pk``, ``walmart_us``, ``amazon_us``, ``etsy_us``.
+        region: ISO region code, e.g. ``"PK"`` or ``"US"``.  Used for audit
+            logging; the Shopping API locale is derived from ``marketplace``.
+
+    Returns:
+        A list of normalised shopping result dicts.  On-marketplace items contain:
+        ``title`` (str), ``source`` (str), ``price`` (str), ``link`` (str),
+        ``rating`` (float or None), ``rating_count`` (int or None).
+        Off-marketplace supplement items carry all the same keys plus
+        ``"off_marketplace": True``.
+
+    Raises:
+        ValueError: If any parameter fails validation.
+        RuntimeError: On rate-limit breach or Serper API error.
+    """
+    # --- Input validation ---
+    product = product.strip()
+    if not product:
+        raise ValueError("product must be a non-empty string.")
+    if len(product) > 200:
+        raise ValueError("product must be 200 characters or fewer.")
+
+    marketplace = marketplace.strip().lower()
+    if marketplace not in _VALID_MARKETPLACES:
+        raise ValueError(
+            f"marketplace must be one of {sorted(_VALID_MARKETPLACES)}. Got: {marketplace!r}"
+        )
+
+    region = region.strip().upper()
+    if not region:
+        raise ValueError("region must be a non-empty string, e.g. 'PK' or 'US'.")
+
+    # --- Audit log ---
+    _log_tool_call(
+        "search_competitor_listings_live",
+        {"product": product, "marketplace": marketplace, "region": region},
+    )
+
+    # --- Marketplace → Google Shopping locale mapping ---
+    _GL_MAP: dict[str, str] = {
+        "daraz_pk":   "pk",
+        "walmart_us": "us",
+        "amazon_us":  "us",
+        "etsy_us":    "us",
+    }
+
+    # --- Marketplace → source-name filter substring (case-insensitive match) ---
+    _SOURCE_FILTER_MAP: dict[str, str] = {
+        "daraz_pk":   "daraz",
+        "walmart_us": "walmart",
+        "amazon_us":  "amazon",
+        "etsy_us":    "etsy",
+    }
+
+    gl: str = _GL_MAP[marketplace]
+    source_filter: str = _SOURCE_FILTER_MAP[marketplace]
+
+    try:
+        # Request 30 results — the source filter will typically discard most of them,
+        # so a larger initial pool is necessary to return a useful set.
+        raw: list[dict[str, Any]] = _call_serper_shopping(
+            product, gl=gl, num_results=30
+        )
+
+        # Filter to listings from the target marketplace only
+        filtered: list[dict[str, Any]] = [
+            item for item in raw
+            if source_filter in item["source"].lower()
+        ]
+
+        # Off-marketplace fallback: when on-marketplace results are scarce,
+        # supplement with up to 5 unfiltered results (deduplicated by link)
+        # so the CompetitorAgent has at least some pricing comparison data.
+        if len(filtered) < 3:
+            filtered_links: set[str] = {item["link"] for item in filtered}
+            supplement: list[dict[str, Any]] = [
+                {**item, "off_marketplace": True}
+                for item in raw
+                if item["link"] not in filtered_links
+            ][:5]
+            results: list[dict[str, Any]] = filtered + supplement
+        else:
+            results = filtered
+
+        _log_tool_response("search_competitor_listings_live", "success", len(results))
+        return results
+
+    except Exception:
+        _log_tool_response("search_competitor_listings_live", "error", 0)
         raise
 
 
