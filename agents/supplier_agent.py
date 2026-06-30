@@ -218,17 +218,20 @@ class SupplierAgent(BaseAgent):
     def _get_search_queries(self, context: dict[str, Any]) -> list[str]:
         """Builds 2–3 targeted supplier search queries for the given product.
 
-        Adapts query wording to the business model so the MCP server returns
-        results from the right supplier type rather than generic product pages.
+        For Pakistan (Daraz) uses keyword-based queries targeting local and
+        China-to-PK wholesale routes. For all other marketplaces uses
+        ``site:``-restricted queries that point directly at Alibaba or
+        AliExpress listing pages — these pages frequently contain price ranges
+        in their indexed titles and snippets, giving Gemini richer pricing
+        signals than generic "best suppliers" articles.
 
         Args:
             context: Session context containing ``product_name``, ``marketplace``,
                 and ``business_model_alias`` (or ``business_model``).
 
         Returns:
-            A list of 2–3 search query strings, ordered from most targeted
-            to most general. Each query is a complete, standalone string
-            ready to be passed to the MCP server's ``web_search`` tool.
+            A list of 2–3 search query strings, each ready to be passed to
+            the MCP server's ``web_search`` tool.
         """
         product: str = context.get("product_name", "product").strip()
         marketplace: str = context.get("marketplace", "").strip()
@@ -237,8 +240,8 @@ class SupplierAgent(BaseAgent):
             context.get("business_model", _DEFAULT_BM_KEY),
         ).strip()
 
-        # Resolve search term modifiers — fall back to dropshipping terms if the
-        # business model key is unrecognised (defensive against future BM additions).
+        # Resolve search term modifiers for Pakistan queries only — USA queries
+        # use site:-restricted patterns that don't need generic BM qualifiers.
         bm_terms = _BM_SEARCH_TERMS.get(business_model, _BM_SEARCH_TERMS[_DEFAULT_BM_KEY])
         supplier_type: str = bm_terms["supplier_type"]
         qualifier: str = bm_terms["qualifier"]
@@ -258,13 +261,21 @@ class SupplierAgent(BaseAgent):
                 f"{product} {supplier_type} Pakistan price per unit {qualifier}"
             )
         else:
-            # USA marketplace queries target global B2B platforms
-            queries.append(
-                f"{product} {supplier_type} price per unit {current_year}"
-            )
-            queries.append(
-                f"{product} wholesale {qualifier} unit cost MOQ {current_year}"
-            )
+            # site:-restricted queries target actual product listing pages on the
+            # two largest B2B/dropshipping platforms. These pages embed price ranges
+            # in indexed titles/snippets (e.g. "US $1.20–$2.50 / piece") so Gemini
+            # receives real price data rather than general-purpose "how to source"
+            # article content.
+            if business_model == "dropshipping":
+                queries.append(f"site:aliexpress.com {product} price")
+                queries.append(f"site:aliexpress.com {product} wholesale no MOQ")
+            elif business_model == "fbs":
+                queries.append(f"site:alibaba.com {product} wholesale price MOQ")
+                queries.append(f"site:aliexpress.com {product} bulk price")
+            else:
+                # fbm — warehouse-ready bulk stock
+                queries.append(f"site:alibaba.com {product} wholesale bulk packaging")
+                queries.append(f"site:aliexpress.com {product} supplier price")
 
         return queries
 
@@ -281,6 +292,11 @@ class SupplierAgent(BaseAgent):
         never an inventor. It must return only valid JSON that matches the
         output schema, using only supplier information actually present in
         the search results.
+
+        For site:-restricted results from Alibaba/AliExpress, prices often
+        appear as ranges (e.g. "US $1.20–$2.50"). The prompt instructs Gemini
+        to use the lower bound and flag the entry with
+        ``price_is_range_lower_bound: true``.
 
         Args:
             context: Session context providing product, marketplace, and
@@ -347,6 +363,10 @@ CRITICAL RULES — follow these exactly:
 11. shipping_cost: extract the per-shipment or per-unit shipping cost as a float when
     mentioned in the snippets (e.g. "shipping $2" → 2.0, "PKR 180 shipping" → 180.0,
     "free shipping" → 0.0). Use 0.0 if no shipping cost is mentioned — never invent a value.
+12. Price data from site:alibaba.com and site:aliexpress.com often appears as a range
+    (e.g. "US $1.20–$2.50 / piece", "PKR 180–300 per unit"). When you see a range,
+    use the LOWER bound as the {price_key} value — this is the wholesale entry price
+    at minimum order. Set "price_is_range_lower_bound": true on that supplier entry.
 
 SEARCH RESULTS:
 {search_results}
@@ -363,7 +383,8 @@ Return a JSON object in exactly this structure:
       "reliability_score": 5,
       "source_url": "https://...",
       "data_retrieved_date": "{today}",
-      "price_may_be_outdated": false
+      "price_may_be_outdated": false,
+      "price_is_range_lower_bound": false
     }}
   ],
   "recommended_supplier": "Name of the single best supplier for this business model, or N/A"

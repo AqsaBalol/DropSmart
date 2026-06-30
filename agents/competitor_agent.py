@@ -61,9 +61,12 @@ _SATURATION_HIGH_REVIEW_THRESHOLD: int = 1000
 _SATURATION_MEDIUM_REVIEW_THRESHOLD: int = 100
 
 # Active listing count thresholds that ALSO feed the saturation signal.
-# Used in conjunction with review counts — either condition triggers the level.
-_SATURATION_HIGH_LISTING_THRESHOLD: int = 500
-_SATURATION_MEDIUM_LISTING_THRESHOLD: int = 100
+# These are scaled to the Shopping API's fixed pool size of ~30 results —
+# NOT a platform-wide listing count (the Shopping API does not expose that).
+# 20+ results returned signals strong product availability across many sellers.
+# Under 8 results signals a niche or low-competition product at this query.
+_SATURATION_HIGH_LISTING_THRESHOLD: int = 20
+_SATURATION_MEDIUM_LISTING_THRESHOLD: int = 8
 
 # Cap on listings kept in the output — keeps the HITL summary scannable.
 _MAX_LISTINGS: int = 5
@@ -82,6 +85,17 @@ _STOP_WORDS: frozenset[str] = frozenset({
     "for", "from", "in", "is", "it", "its", "new", "of",
     "on", "or", "set", "the", "to", "top", "with",
 })
+
+# Regional peak-sales events injected into the seasonality trend query.
+# Generic "best selling season" queries often return listicles rather than
+# product-specific seasonality data; naming known events forces search engines
+# to return results that explicitly discuss seasonal demand for this product.
+_REGIONAL_SALES_EVENTS: dict[str, str] = {
+    "daraz_pk": "11.11 12.12 Ramadan Eid sale Pakistan",
+    "walmart_us": "Black Friday Cyber Monday Christmas back to school",
+    "amazon_us": "Black Friday Cyber Monday Christmas Prime Day",
+    "etsy_us": "Christmas Valentine's Mother's Day holiday gift season",
+}
 
 
 class CompetitorAgent(BaseAgent):
@@ -327,6 +341,11 @@ class CompetitorAgent(BaseAgent):
         trend Gemini call receives trend-focused snippets (market reports, Google
         Trends summaries, news) rather than listing pages.
 
+        The seasonality query includes known regional sales events from
+        ``_REGIONAL_SALES_EVENTS`` so search engines surface results that
+        explicitly discuss this product's seasonal demand rather than generic
+        "best products to sell" listicles.
+
         Args:
             context: Session context containing ``product_name`` and
                 ``marketplace``.
@@ -346,10 +365,12 @@ class CompetitorAgent(BaseAgent):
             f'"{product}" demand trend {region} {year} growing declining'
         )
 
-        # Query 2: seasonality — looks for sales events or seasonal demand patterns
-        # associated with this product category in the target region
+        # Query 2: seasonality — includes known regional sales events so search
+        # results explicitly mention seasonal demand for this product rather than
+        # returning generic "best dropshipping products" listicle pages.
         queries.append(
-            f'"{product}" best selling season peak months {region}'
+            f'"{product}" best selling season peak months {region} '
+            f'{_REGIONAL_SALES_EVENTS.get(marketplace, "holiday season")}'
         )
 
         return queries
