@@ -163,7 +163,11 @@ def main() -> None:
         if status == "completed":
             report_result = final_context.get("report_result", {})
             filepath = report_result.get("report_filepath", "unknown")
-            print(f"✓ Report generated and saved to:")
+            formatted_report = report_result.get("formatted_report", "")
+            if formatted_report:
+                print(formatted_report)
+                print()
+            print(f"✓ Full report also saved to:")
             print(f"  {filepath}\n")
         else:
             print("Pipeline was cancelled at the HITL checkpoint.\n")
