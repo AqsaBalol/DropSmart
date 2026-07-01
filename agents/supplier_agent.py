@@ -15,28 +15,11 @@ from agents.base_agent import BaseAgent
 
 
 # ---------------------------------------------------------------------------
-# Business-model → search modifier mapping
+# Constants
 # ---------------------------------------------------------------------------
 
-# These strings are inserted into search queries to target the right supplier
-# type for each model. They should never be hardcoded inside the query methods.
-_BM_SEARCH_TERMS: dict[str, dict[str, str]] = {
-    "dropshipping": {
-        "supplier_type": "dropship supplier direct ship no MOQ",
-        "qualifier": "blind shipping white label AliExpress Alibaba",
-    },
-    "fbs": {
-        "supplier_type": "wholesale bulk supplier",
-        "qualifier": "low MOQ bulk pricing Alibaba AliExpress",
-    },
-    "fbm": {
-        "supplier_type": "wholesale supplier fulfillment center ready",
-        "qualifier": "bulk packaging labeling compliant Alibaba",
-    },
-}
-
 # When no business model alias is present in context, default to dropshipping
-# terms rather than crashing — the error in context keys is a pipeline issue,
+# rather than crashing — the error in context keys is a pipeline issue,
 # not a supplier-search issue.
 _DEFAULT_BM_KEY: str = "dropshipping"
 
@@ -216,22 +199,34 @@ class SupplierAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _get_search_queries(self, context: dict[str, Any]) -> list[str]:
-        """Builds 2–3 targeted supplier search queries for the given product.
+        """Builds 5 targeted supplier search queries for the given product.
 
-        For Pakistan (Daraz) uses keyword-based queries targeting local and
-        China-to-PK wholesale routes. For all other marketplaces uses
-        ``site:``-restricted queries that point directly at Alibaba or
-        AliExpress listing pages — these pages frequently contain price ranges
-        in their indexed titles and snippets, giving Gemini richer pricing
-        signals than generic "best suppliers" articles.
+        Returns exactly 5 queries, parameterised by marketplace and business
+        model. Each branch covers multiple sourcing channels so Gemini receives
+        a diverse pool of supplier snippets rather than results from a single
+        platform.
+
+        Pakistan (Daraz):
+            Targets local wholesalers, PakDropshipping, HHC Markaz, and
+            China-to-PK import routes — all 5 queries are business-model
+            agnostic because the Pakistan supplier landscape is largely the
+            same across models.
+
+        USA dropshipping:
+            Targets US-warehouse dropship platforms (CJDropshipping, Zendrop,
+            Doba, TopDawg) and general wholesale directories.
+
+        USA bulk/wholesale (fbs / fbm):
+            Targets bulk B2B directories (DollarDays, TopTenWholesale, Costco
+            wholesale, FBA-specialist suppliers).
 
         Args:
             context: Session context containing ``product_name``, ``marketplace``,
                 and ``business_model_alias`` (or ``business_model``).
 
         Returns:
-            A list of 2–3 search query strings, each ready to be passed to
-            the MCP server's ``web_search`` tool.
+            A list of exactly 5 search query strings, each ready to be passed
+            to the MCP server's ``web_search`` tool.
         """
         product: str = context.get("product_name", "product").strip()
         marketplace: str = context.get("marketplace", "").strip()
@@ -240,44 +235,33 @@ class SupplierAgent(BaseAgent):
             context.get("business_model", _DEFAULT_BM_KEY),
         ).strip()
 
-        # Resolve search term modifiers for Pakistan queries only — USA queries
-        # use site:-restricted patterns that don't need generic BM qualifiers.
-        bm_terms = _BM_SEARCH_TERMS.get(business_model, _BM_SEARCH_TERMS[_DEFAULT_BM_KEY])
-        supplier_type: str = bm_terms["supplier_type"]
-        qualifier: str = bm_terms["qualifier"]
-
-        current_year: int = datetime.date.today().year
-        queries: list[str] = []
-
         if marketplace == "daraz_pk":
-            # Pakistan-specific queries favour local and China-to-PK wholesale routes
-            queries.append(
-                f"wholesale {product} supplier Pakistan MOQ 1 {current_year}"
-            )
-            queries.append(
-                f"dropship {product} Pakistan supplier price {current_year} {supplier_type}"
-            )
-            queries.append(
-                f"{product} {supplier_type} Pakistan price per unit {qualifier}"
-            )
-        else:
-            # site:-restricted queries target actual product listing pages on the
-            # two largest B2B/dropshipping platforms. These pages embed price ranges
-            # in indexed titles/snippets (e.g. "US $1.20–$2.50 / piece") so Gemini
-            # receives real price data rather than general-purpose "how to source"
-            # article content.
-            if business_model == "dropshipping":
-                queries.append(f"site:aliexpress.com {product} price")
-                queries.append(f"site:aliexpress.com {product} wholesale no MOQ")
-            elif business_model == "fbs":
-                queries.append(f"site:alibaba.com {product} wholesale price MOQ")
-                queries.append(f"site:aliexpress.com {product} bulk price")
-            else:
-                # fbm — warehouse-ready bulk stock
-                queries.append(f"site:alibaba.com {product} wholesale bulk packaging")
-                queries.append(f"site:aliexpress.com {product} supplier price")
+            return [
+                f"{product} wholesale price Pakistan Karachi Lahore market 2026",
+                f"{product} PakDropshipping HHC Markaz supplier Pakistan price",
+                f"{product} dropshipping supplier Pakistan local delivery days price",
+                f"{product} China import supplier Pakistan price per unit shipping days",
+                f"{product} wholesale distributor Pakistan bulk MOQ price 2026",
+            ]
 
-        return queries
+        # USA marketplaces — branch on business model
+        if business_model == "dropshipping":
+            return [
+                f"{product} dropship supplier US warehouse price shipping days 2026",
+                f"{product} CJDropshipping Zendrop Doba price per unit MOQ shipping",
+                f"best {product} dropshipping suppliers 2026 price review shipping",
+                f"{product} TopDawg wholesale dropship USA price per unit shipping",
+                f"{product} wholesale distributor USA bulk price per unit MOQ",
+            ]
+
+        # fbs, fulfilled_by_seller, fbm, fulfilled_by_marketplace — all need bulk
+        return [
+            f"{product} wholesale bulk price per unit USA MOQ shipping cost 2026",
+            f"{product} Costco wholesale bulk price per unit resell",
+            f"{product} wholesale distributor USA FBA supplier bulk shipping days",
+            f"{product} DollarDays TopTenWholesale bulk price shipping days",
+            f"best {product} wholesale suppliers Amazon FBA 2026 price review",
+        ]
 
     # ------------------------------------------------------------------
     # Prompt builder
@@ -293,10 +277,9 @@ class SupplierAgent(BaseAgent):
         output schema, using only supplier information actually present in
         the search results.
 
-        For site:-restricted results from Alibaba/AliExpress, prices often
-        appear as ranges (e.g. "US $1.20–$2.50"). The prompt instructs Gemini
-        to use the lower bound and flag the entry with
-        ``price_is_range_lower_bound: true``.
+        Prices in search results often appear as ranges (e.g. "US $1.20–$2.50").
+        The prompt instructs Gemini to use the lower bound and flag the entry
+        with ``price_is_range_lower_bound: true``.
 
         Args:
             context: Session context providing product, marketplace, and
@@ -363,10 +346,14 @@ CRITICAL RULES — follow these exactly:
 11. shipping_cost: extract the per-shipment or per-unit shipping cost as a float when
     mentioned in the snippets (e.g. "shipping $2" → 2.0, "PKR 180 shipping" → 180.0,
     "free shipping" → 0.0). Use 0.0 if no shipping cost is mentioned — never invent a value.
-12. Price data from site:alibaba.com and site:aliexpress.com often appears as a range
-    (e.g. "US $1.20–$2.50 / piece", "PKR 180–300 per unit"). When you see a range,
-    use the LOWER bound as the {price_key} value — this is the wholesale entry price
-    at minimum order. Set "price_is_range_lower_bound": true on that supplier entry.
+12. Price data often appears as a range (e.g. "US $1.20–$2.50 / piece",
+    "PKR 180–300 per unit"). When you see a range, use the LOWER bound as the
+    {price_key} value — this is the wholesale entry price at minimum order.
+    Set "price_is_range_lower_bound": true on that supplier entry.
+13. Supplier names must be the actual business or platform name found in the
+    search results (e.g. "CJDropshipping", "DollarDays", "HHC Dropshipping",
+    "PakDropshipping"). Never use generic descriptions like
+    "AliExpress Dropshipping Seller" or "Alibaba.com (Bulk Packaging)" as a name.
 
 SEARCH RESULTS:
 {search_results}
