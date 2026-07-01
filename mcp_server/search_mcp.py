@@ -8,6 +8,7 @@ Every tool call is logged to security.log for audit purposes.
 import logging
 import os
 import re
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -127,9 +128,18 @@ _call_timestamps: deque[float] = deque()
 def _check_rate_limit() -> None:
     """Enforces a sliding-window rate limit of 10 Serper calls per 60 seconds.
 
+    Also introduces a minimum 0.5-second delay between ALL calls — not only
+    when the cap is reached. This prevents burst traffic from hitting the API
+    in rapid succession (e.g. when FeeAgent and SupplierAgent run back-to-back)
+    which would exhaust the window before downstream agents can execute.
+
     Raises:
         RuntimeError: If the rate limit has been reached.
     """
+    # Minimum inter-call spacing — applied unconditionally before rate-limit
+    # check so that bursts from multiple agents are naturally spread out.
+    time.sleep(0.5)
+
     now = datetime.now(timezone.utc).timestamp()
     window_start = now - _RATE_LIMIT_WINDOW_SECONDS
 
@@ -639,18 +649,25 @@ def search_competitor_listings_live(
 
     **Source filtering**
 
-    Each marketplace is mapped to a source-name substring (e.g. ``"amazon"``).
-    After fetching 30 raw shopping results the tool keeps only those whose
-    ``source`` field (lowercased) contains the mapped substring, so only listings
-    from the target platform are returned.
+    Filtering behaviour depends on the marketplace:
+
+    - ``walmart_us``: results are filtered to those whose ``source`` field
+      (lowercased) contains ``"walmart"``.  This works correctly because
+      Walmart appears as a source name in Google Shopping results.
+    - ``amazon_us`` / ``etsy_us``: NO source filter is applied.  Google
+      Shopping does not use "amazon" or "etsy" as the ``source`` field —
+      it uses individual brand or seller names — so filtering by those strings
+      would eliminate nearly all results.  All 30 raw results are returned.
+    - ``daraz_pk``: ``search_competitor_listings_live`` is not called for
+      Daraz; the CompetitorAgent uses organic ``web_search`` instead.
 
     **Off-marketplace fallback**
 
-    When fewer than 3 on-marketplace results survive the filter the tool
-    supplements the list with up to 5 additional results from the unfiltered
-    pool (deduplicated by link).  Each supplemental item carries an extra
-    ``"off_marketplace": True`` key so downstream agents can distinguish
-    comparison data from genuine target-marketplace listings.
+    For ``walmart_us`` only: when fewer than 3 on-marketplace results survive
+    the filter the tool supplements the list with up to 5 additional results
+    from the unfiltered pool (deduplicated by link).  Each supplemental item
+    carries an extra ``"off_marketplace": True`` key so downstream agents can
+    distinguish comparison data from genuine target-marketplace listings.
 
     Args:
         product: Product name or description. Must be non-empty, max 200 characters.
@@ -700,43 +717,37 @@ def search_competitor_listings_live(
         "etsy_us":    "us",
     }
 
-    # --- Marketplace → source-name filter substring (case-insensitive match) ---
-    _SOURCE_FILTER_MAP: dict[str, str] = {
-        "daraz_pk":   "daraz",
-        "walmart_us": "walmart",
-        "amazon_us":  "amazon",
-        "etsy_us":    "etsy",
-    }
-
     gl: str = _GL_MAP[marketplace]
-    source_filter: str = _SOURCE_FILTER_MAP[marketplace]
 
     try:
-        # Request 30 results — the source filter will typically discard most of them,
-        # so a larger initial pool is necessary to return a useful set.
+        # Request 30 results to provide a large enough pool after any filtering.
         raw: list[dict[str, Any]] = _call_serper_shopping(
             product, gl=gl, num_results=30
         )
 
-        # Filter to listings from the target marketplace only
-        filtered: list[dict[str, Any]] = [
-            item for item in raw
-            if source_filter in item["source"].lower()
-        ]
-
-        # Off-marketplace fallback: when on-marketplace results are scarce,
-        # supplement with up to 5 unfiltered results (deduplicated by link)
-        # so the CompetitorAgent has at least some pricing comparison data.
-        if len(filtered) < 3:
-            filtered_links: set[str] = {item["link"] for item in filtered}
-            supplement: list[dict[str, Any]] = [
-                {**item, "off_marketplace": True}
-                for item in raw
-                if item["link"] not in filtered_links
-            ][:5]
-            results: list[dict[str, Any]] = filtered + supplement
+        if marketplace == "walmart_us":
+            # Walmart appears reliably as "walmart" in Google Shopping source field —
+            # filter so only genuine Walmart listings are returned.
+            filtered: list[dict[str, Any]] = [
+                item for item in raw
+                if "walmart" in item["source"].lower()
+            ]
+            # Off-marketplace fallback: supplement when on-marketplace results are scarce
+            if len(filtered) < 3:
+                filtered_links: set[str] = {item["link"] for item in filtered}
+                supplement: list[dict[str, Any]] = [
+                    {**item, "off_marketplace": True}
+                    for item in raw
+                    if item["link"] not in filtered_links
+                ][:5]
+                results: list[dict[str, Any]] = filtered + supplement
+            else:
+                results = filtered
         else:
-            results = filtered
+            # amazon_us and etsy_us: return ALL results without source filtering.
+            # Google Shopping shows brand/seller names as the source field —
+            # filtering by "amazon" or "etsy" would eliminate nearly all results.
+            results = raw
 
         _log_tool_response("search_competitor_listings_live", "success", len(results))
         return results

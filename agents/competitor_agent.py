@@ -3,17 +3,26 @@
 Searches for live competitor listings on the target marketplace and synthesises
 trend/seasonality data. Makes exactly one Gemini call per pipeline run.
 
-Listings come from the Shopping API via ``search_competitor_listings_live``,
-which returns pre-structured fields (title, price, rating, etc.). Because the
-data is already structured, Gemini is not needed for listing extraction —
-listings are built directly in Python from the API response.
+Phase 1 — Listing fetch (marketplace-specific, no Gemini):
+- daraz_pk: uses organic ``web_search`` against site:daraz.pk (Daraz is not
+  reliably indexed in Google Shopping — three targeted queries substitute for
+  the Shopping API).
+- walmart_us: uses ``search_competitor_listings_live`` and keeps only results
+  whose ``source`` field contains "walmart" — this filter works correctly
+  because Walmart appears as the source in Google Shopping results.
+- amazon_us / etsy_us: uses ``search_competitor_listings_live`` with NO source
+  filter — Google Shopping shows brand names (not "amazon" / "etsy") as the
+  source field, so unfiltered results give far better coverage.
 
-The single Gemini call (trend synthesis) receives web_search results focused
-on demand direction and seasonality, and returns trend_direction, product_type,
-peak_season_months, and current_month_demand_signal.
+Phase 2 — Trend synthesis (always runs, one Gemini call):
+    Runs 2 web_search queries for demand direction and seasonality. Gemini
+    synthesises them into trend_direction, product_type, peak_season_months,
+    and current_month_demand_signal. Phase 2 always executes even when Phase 1
+    returns no listings, so trend data is available for risk assessment
+    regardless of listing availability.
 
-Keywords and market_leader are derived from the structured listing data in
-pure Python using word-frequency analysis — no Gemini call required.
+Keywords and market_leader are derived from listing titles in pure Python using
+bigram + filtered-unigram frequency analysis — no Gemini call required.
 """
 
 # --- Standard library ---
@@ -79,11 +88,17 @@ _KEYWORD_COUNT: int = 7
 # middle cluster that reflects where most successful sellers actually price.
 _SWEET_SPOT_TRIM_RATIO: float = 0.2
 
-# Words excluded from keyword frequency analysis — too common to be signal.
+# Words excluded from keyword frequency analysis.
+# Expanded set compared to initial version — removes common product adjectives
+# ("pro", "true"), version strings ("v2", "ii"), and single digits that produce
+# noise rather than meaningful search-intent signal.
 _STOP_WORDS: frozenset[str] = frozenset({
-    "a", "an", "and", "as", "at", "be", "best", "buy", "by",
-    "for", "from", "in", "is", "it", "its", "new", "of",
-    "on", "or", "set", "the", "to", "top", "with",
+    "a", "an", "the", "and", "or", "for", "with", "in", "of", "to",
+    "at", "by", "from", "on", "is", "it", "as", "are", "be", "was",
+    "has", "its", "this", "that", "true", "pro", "v2",
+    "1", "2", "3", "4", "5", "ii",
+    # Additional common listing filler words
+    "best", "buy", "new", "set", "top",
 })
 
 # Regional peak-sales events injected into the seasonality trend query.
@@ -101,16 +116,19 @@ _REGIONAL_SALES_EVENTS: dict[str, str] = {
 class CompetitorAgent(BaseAgent):
     """Analyses the live competitor landscape on the target marketplace.
 
-    Phase 1 — Structured listing fetch:
-        Calls ``search_competitor_listings_live`` (Shopping API) to get
-        pre-structured listing data. Builds the listings list directly in
-        Python — no Gemini call. Derives keywords, market_leader, price stats,
-        and saturation from the listings in pure Python.
+    Phase 1 — Listing fetch (marketplace-specific, no Gemini):
+        daraz_pk uses organic ``web_search`` (3 queries); walmart_us uses the
+        Shopping API with source filtering; amazon_us and etsy_us use the
+        Shopping API with all source filtering disabled (Google Shopping does
+        not use "amazon" or "etsy" as source — filtering would return nothing).
+        Keywords, market_leader, price stats, and saturation are derived from
+        the structured listings in pure Python.
 
-    Phase 2 — Trend synthesis (one Gemini call):
+    Phase 2 — Trend synthesis (one Gemini call, always runs):
         Runs 2 web_search queries focused on demand direction and seasonality.
         Passes the results to Gemini for synthesis. Gemini returns trend_direction,
         product_type, peak_season_months, and current_month_demand_signal.
+        Phase 2 runs even when Phase 1 produces no listings.
 
     Returns a ``competitor_result`` dict consumed by MarginAgent (avg_market_price),
     RiskAgent (market_saturation), and ReportAgent.
@@ -127,8 +145,14 @@ class CompetitorAgent(BaseAgent):
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Fetches competitor listings and returns full market intelligence.
 
-        Phase 1 uses the Shopping API for structured listing data (no Gemini).
-        Phase 2 uses web_search + one Gemini call for trend synthesis.
+        Phase 1 is marketplace-specific (no Gemini):
+        - daraz_pk: 3 organic web_search queries targeting site:daraz.pk.
+        - walmart_us: Shopping API with source filter for "walmart".
+        - amazon_us / etsy_us: Shopping API with NO source filter.
+
+        Phase 2 always runs regardless of Phase 1 outcome. The
+        estimated_demand_signal in performance_metrics is computed after
+        Phase 2 so it can incorporate trend_direction from Gemini.
 
         Args:
             context: Cumulative session context from the Orchestrator. Must
@@ -154,12 +178,12 @@ class CompetitorAgent(BaseAgent):
                         },
                         ...  # up to _MAX_LISTINGS entries
                     ],
-                    "total_active_listings": int,    # count of Shopping API results
+                    "total_active_listings": int,
                     "price_range": {"min": float, "max": float},
                     "sweet_spot_price_range": {"min": float, "max": float},
                     "market_leader": str,
                     "performance_metrics": {
-                        "estimated_monthly_sales_range": str,
+                        "estimated_demand_signal": str,
                         "avg_rating_to_rank": float,
                         "avg_review_count_top_sellers": int,
                         "market_leader_tenure_signal": str
@@ -174,14 +198,14 @@ class CompetitorAgent(BaseAgent):
                     "top_keywords": [
                         {"keyword": str, "volume_signal": str}
                     ],
-                    "market_saturation": str,        # "low"/"medium"/"high"
+                    "market_saturation": str,
                     "avg_market_price": float,
                     "currency": str,
                     "search_queries_used": list[str]
                 }
 
-            If both phases return no data, all numeric fields are 0.0, lists
-            are empty, and strings default to "unknown".
+            If both phases return no data, numeric fields are 0.0, lists are
+            empty, and strings default to "unknown".
         """
         product: str = context.get("product_name", "").strip()
         marketplace: str = context.get("marketplace", "").strip()
@@ -193,98 +217,143 @@ class CompetitorAgent(BaseAgent):
 
         self._log_start("competitor analysis")
 
-        # Lazy import pattern: avoids running the MCP module's top-level
-        # SERPER_API_KEY check before the Orchestrator has called load_dotenv().
+        # Lazy import: avoids running the MCP module's top-level SERPER_API_KEY
+        # check before the Orchestrator has called load_dotenv().
         from mcp_server.search_mcp import search_competitor_listings_live, web_search
 
         all_queries_ran: list[str] = []
-
-        # ----------------------------------------------------------------
-        # Phase 1 — Structured listing fetch via Shopping API (no Gemini)
-        # ----------------------------------------------------------------
-
-        raw_listings: list[dict[str, Any]] = []
-        try:
-            raw_listings = search_competitor_listings_live(
-                product=context["product_name"],
-                marketplace=context["marketplace"],
-                region=region,
-            )
-            self._logger.info(
-                "Shopping API returned %d items for %r on %r",
-                len(raw_listings),
-                product,
-                marketplace,
-            )
-        except Exception as exc:
-            self._logger.warning(
-                "search_competitor_listings_live failed: %s — proceeding with empty listings.",
-                exc,
-            )
-
-        # total_active_listings: the number of shopping results the API returned
-        # for this product and marketplace. This is NOT the platform's true total
-        # listing count (the Shopping API does not expose that figure), but it
-        # is a useful relative saturation signal across products.
-        total_active_listings: int = len(raw_listings)
-        all_queries_ran.append(
-            f"search_competitor_listings_live({product!r}, {marketplace!r})"
-        )
-
-        # Build structured listing dicts directly from the API response.
-        # The Shopping API returns pre-structured fields so no Gemini extraction
-        # call is needed — we just normalise the types and field names.
         today_str: str = datetime.date.today().isoformat()
         listings: list[dict[str, Any]] = []
+        total_active_listings: int = 0
 
-        for item in raw_listings[:_MAX_LISTINGS]:
-            price_float: float = self._parse_price_string(
-                str(item.get("price", "") or "")
+        # ----------------------------------------------------------------
+        # Phase 1 — Listing fetch (marketplace-specific, no Gemini)
+        # ----------------------------------------------------------------
+
+        if marketplace == "daraz_pk":
+            # Daraz is not reliably indexed in Google Shopping — use organic
+            # web_search against site:daraz.pk as a fallback.
+            self._logger.info(
+                "Daraz: using organic search fallback (not in Google Shopping)"
             )
-            listings.append(
-                {
+            daraz_queries: list[str] = [
+                f"site:daraz.pk {product} price reviews",
+                f"{product} daraz.pk best seller price rating",
+                f"{product} daraz pakistan price listing 2026",
+            ]
+            raw_organic: list[dict[str, Any]] = []
+            for q in daraz_queries:
+                try:
+                    results = web_search(query=q, num_results=5)
+                    raw_organic.extend(results)
+                    all_queries_ran.append(q)
+                except Exception as exc:
+                    self._logger.warning(
+                        "Daraz organic query failed (skipping): %r — %s", q, exc
+                    )
+
+            total_active_listings = len(raw_organic)
+            for item in raw_organic[:_MAX_LISTINGS]:
+                # Price is not structured in organic results — attempt to parse
+                # it from the snippet text (e.g. "PKR 1,200 – PKR 2,500").
+                snippet_price: float = self._parse_price_string(
+                    str(item.get("snippet", "") or "")
+                )
+                listings.append({
+                    "title": str(item.get("title", "")),
+                    "price": snippet_price,
+                    "currency": currency,
+                    "rating": 0.0,
+                    "review_count": 0,
+                    "seller_name": "Daraz",
+                    "source_url": str(item.get("url", "")),
+                    "data_retrieved_date": today_str,
+                    "off_marketplace": False,
+                })
+
+        else:
+            # Amazon/Etsy/Walmart: use the Shopping API.
+            # For amazon_us and etsy_us, source filtering is disabled in the
+            # MCP tool — Google Shopping uses brand names as the source field,
+            # not "amazon" or "etsy", so unfiltered results give better coverage.
+            if marketplace in ("amazon_us", "etsy_us"):
+                self._logger.info(
+                    "Amazon/Etsy: returning all Shopping API results without source filtering"
+                )
+
+            raw_listings: list[dict[str, Any]] = []
+            try:
+                raw_listings = search_competitor_listings_live(
+                    product=context["product_name"],
+                    marketplace=context["marketplace"],
+                    region=region,
+                )
+                self._logger.info(
+                    "Shopping API returned %d items for %r on %r",
+                    len(raw_listings),
+                    product,
+                    marketplace,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "search_competitor_listings_live failed: %s — proceeding with empty listings.",
+                    exc,
+                )
+
+            total_active_listings = len(raw_listings)
+            all_queries_ran.append(
+                f"search_competitor_listings_live({product!r}, {marketplace!r})"
+            )
+
+            for item in raw_listings[:_MAX_LISTINGS]:
+                price_float: float = self._parse_price_string(
+                    str(item.get("price", "") or "")
+                )
+                listings.append({
                     "title": str(item.get("title", "")),
                     "price": price_float,
                     "currency": currency,
-                    # Shopping API may return None — coerce to 0.0 explicitly
                     "rating": float(item.get("rating") or 0.0),
                     "review_count": int(item.get("rating_count") or 0),
                     "seller_name": str(item.get("source") or "Unknown"),
                     "source_url": str(item.get("link", "")),
                     "data_retrieved_date": today_str,
-                    # Preserve off_marketplace flag so the report can annotate
-                    # listings that came from outside the target marketplace.
                     "off_marketplace": bool(item.get("off_marketplace", False)),
-                }
-            )
+                })
 
         if not listings:
+            # Log but do NOT return early — Phase 2 (trends) always runs so
+            # the risk agent and report agent still get trend data.
             self._logger.warning(
-                "No usable listing data for %r on %r", product, marketplace
+                "No usable listing data for %r on %r — continuing with trend analysis.",
+                product,
+                marketplace,
             )
-            self._log_end("competitor analysis", success=False)
-            return {"competitor_result": self._empty_result(all_queries_ran, currency)}
 
-        # Derive all listing-based signals in pure Python — no Gemini needed
-        # because the Shopping API already gave us structured numeric fields.
-        avg_price, price_range = self._compute_price_stats(listings)
-        sweet_spot: dict[str, float] = self._derive_sweet_spot(listings)
-        saturation: str = self._classify_saturation(listings, total_active_listings)
+        # Listing-based aggregates: safe defaults when listings is empty so
+        # Phase 2 and the final return dict are not affected by missing data.
+        avg_price: float = 0.0
+        price_range: dict[str, float] = {"min": 0.0, "max": 0.0}
+        sweet_spot: dict[str, float] = {"min": 0.0, "max": 0.0}
+        market_leader: str = "unknown"
+        top_keywords: list[dict[str, str]] = []
+        saturation: str = self._classify_saturation([], total_active_listings)
         performance_metrics: dict[str, Any] = self._build_performance_metrics(
-            listings, tenure_signal="unknown"
+            [], tenure_signal="unknown"
         )
 
-        # Market leader: most frequently appearing seller across the top listings
-        market_leader: str = self._pick_market_leader(listings)
-
-        # Keywords: word-frequency analysis across listing titles — "high" when
-        # a term appears in 3+ titles, "medium" for 2, "low" for 1.
-        top_keywords: list[dict[str, str]] = self._extract_keywords_from_titles(
-            listings
-        )
+        if listings:
+            avg_price, price_range = self._compute_price_stats(listings)
+            sweet_spot = self._derive_sweet_spot(listings)
+            saturation = self._classify_saturation(listings, total_active_listings)
+            performance_metrics = self._build_performance_metrics(
+                listings, tenure_signal="unknown"
+            )
+            market_leader = self._pick_market_leader(listings)
+            top_keywords = self._extract_keywords_from_titles(listings)
 
         # ----------------------------------------------------------------
-        # Phase 2 — Trend synthesis (one Gemini call)
+        # Phase 2 — Trend synthesis (one Gemini call, always executes)
         # ----------------------------------------------------------------
 
         trend_queries: list[str] = self._get_trend_search_queries(context)
@@ -301,7 +370,6 @@ class CompetitorAgent(BaseAgent):
                     "Trend query failed (skipping): %r — %s", query, exc
                 )
 
-        # Fall back to safe defaults when trend search yields nothing
         trends: dict[str, Any] = self._empty_trends()
         if trend_results:
             trend_text: str = self._format_results_for_prompt(trend_results)
@@ -311,7 +379,16 @@ class CompetitorAgent(BaseAgent):
             if parsed_trends:
                 trends = parsed_trends
 
-        self._log_end("competitor analysis", success=True)
+        # Compute the demand signal now that trend_direction is known —
+        # overwrite the placeholder set by _build_performance_metrics().
+        trend_direction: str = trends.get("trend_direction", "unknown")
+        performance_metrics["estimated_demand_signal"] = self._estimate_demand_signal(
+            listings, trend_direction
+        )
+
+        self._log_end(
+            "competitor analysis", success=bool(listings or trend_results)
+        )
 
         return {
             "competitor_result": {
@@ -486,12 +563,13 @@ Return this JSON structure exactly:
     def _parse_price_string(self, price_str: str) -> float:
         """Parses a price string containing currency symbols into a float.
 
-        Handles formats returned by the Shopping API such as ``"$19.99"``,
-        ``"PKR 1,799"``, ``"Rs. 233"``, and bare ``"19.99"``. Strips all
-        non-numeric characters except the decimal point before parsing.
+        Handles formats returned by the Shopping API or organic snippets such
+        as ``"$19.99"``, ``"PKR 1,799"``, ``"Rs. 233"``, and bare ``"19.99"``.
+        Strips all non-numeric characters except the decimal point before parsing.
 
         Args:
-            price_str: Raw price string from a Shopping API result item.
+            price_str: Raw price string from a Shopping API result or organic
+                search snippet.
 
         Returns:
             The numeric price value as a float, or ``0.0`` if the string
@@ -523,22 +601,33 @@ Return this JSON structure exactly:
             return 0.0
 
     # ------------------------------------------------------------------
-    # Pure-Python keyword extractor
+    # Keyword extractor — bigram + filtered unigram approach
     # ------------------------------------------------------------------
 
     def _extract_keywords_from_titles(
         self, listings: list[dict[str, Any]]
     ) -> list[dict[str, str]]:
-        """Extracts high-frequency keywords from listing titles using word frequency.
+        """Extracts high-frequency bigrams and long unigrams from listing titles.
 
-        Tokenises all listing titles, removes stop words and short tokens, counts
-        how many distinct titles each token appears in, then returns the top
-        ``_KEYWORD_COUNT`` tokens ordered by frequency.
+        The previous single-token approach produced brand fragments like "jbl",
+        "vibe", or "true". This version generates bigrams (2-word phrases) and
+        also includes unigrams only when they are 5+ characters long, which
+        eliminates short brand tokens while keeping meaningful terms like
+        "earbuds", "wireless", "bluetooth".
 
-        Volume signal thresholds:
-        - ``"high"``: token appears in 3 or more titles.
-        - ``"medium"``: token appears in exactly 2 titles.
-        - ``"low"``: token appears in exactly 1 title.
+        Algorithm:
+        1. Tokenise all titles into lowercase alphanumeric words.
+        2. Filter out stop words and purely numeric tokens.
+        3. Generate bigrams (adjacent word pairs) from the filtered sequence.
+        4. Collect long unigrams (length >= 5) from the same filtered sequence.
+        5. Merge bigrams and unigrams; each title contributes at most one count
+           per term (prevents a repeated word in one title from dominating).
+        6. Return the top ``_KEYWORD_COUNT`` terms with volume signals.
+
+        Volume signal thresholds (cross-title occurrence count):
+        - ``"high"``: appears in 3 or more titles.
+        - ``"medium"``: appears in exactly 2 titles.
+        - ``"low"``: appears in exactly 1 title.
 
         Args:
             listings: Structured listing dicts, each expected to have a
@@ -548,23 +637,31 @@ Return this JSON structure exactly:
             A list of up to ``_KEYWORD_COUNT`` dicts, each with ``"keyword"``
             and ``"volume_signal"`` keys, ordered by frequency descending.
         """
-        # Count how many titles each token appears in — not total occurrences,
-        # because a keyword repeated 5× in one title is less valuable than one
-        # that appears across 5 separate sellers' listings.
-        token_title_counts: Counter[str] = Counter()
+        term_title_counts: Counter[str] = Counter()
 
         for listing in listings:
             title: str = listing.get("title", "").lower()
-            # Unique tokens per title so a repeated word in one title only counts once
-            unique_tokens: set[str] = {
-                tok
-                for tok in re.findall(r"[a-z0-9]+", title)
-                if len(tok) >= 3 and tok not in _STOP_WORDS
-            }
-            token_title_counts.update(unique_tokens)
+            tokens: list[str] = re.findall(r"[a-z0-9]+", title)
+
+            # Remove stop words and purely numeric tokens
+            filtered: list[str] = [
+                tok for tok in tokens
+                if tok not in _STOP_WORDS and not tok.isdigit()
+            ]
+
+            # Bigrams from the filtered token sequence
+            bigrams: set[str] = set()
+            for i in range(len(filtered) - 1):
+                bigrams.add(f"{filtered[i]} {filtered[i + 1]}")
+
+            # Unigrams: only 5+ character tokens to avoid short brand fragments
+            unigrams: set[str] = {tok for tok in filtered if len(tok) >= 5}
+
+            # Use set union so each title contributes at most 1 count per term
+            term_title_counts.update(bigrams | unigrams)
 
         results: list[dict[str, str]] = []
-        for keyword, count in token_title_counts.most_common(_KEYWORD_COUNT):
+        for keyword, count in term_title_counts.most_common(_KEYWORD_COUNT):
             if count >= 3:
                 volume_signal = "high"
             elif count >= 2:
@@ -574,6 +671,53 @@ Return this JSON structure exactly:
             results.append({"keyword": keyword, "volume_signal": volume_signal})
 
         return results
+
+    # ------------------------------------------------------------------
+    # Demand signal estimator
+    # ------------------------------------------------------------------
+
+    def _estimate_demand_signal(
+        self,
+        listings: list[dict[str, Any]],
+        trend_direction: str,
+    ) -> str:
+        """Derives a qualitative demand signal from listing reviews and trend data.
+
+        Replaces the old ``estimated_monthly_sales_range`` field (which always
+        returned ``"insufficient data"``) with a human-readable string that
+        actually uses available data. Average review count across the top
+        listings is used as a proxy for demand evidence; ``trend_direction``
+        from the Gemini synthesis adds directional context.
+
+        Called after Phase 2 so ``trend_direction`` is available.
+
+        Args:
+            listings: Structured listing dicts, each with a ``review_count`` key.
+            trend_direction: Gemini's synthesised trend direction string —
+                ``"growing"``, ``"stable"``, ``"declining"``, or ``"unknown"``.
+
+        Returns:
+            A human-readable demand signal string. Never returns ``None``.
+        """
+        if not listings:
+            return "No listing data available"
+
+        review_counts: list[int] = [
+            int(listing.get("review_count", 0)) for listing in listings
+        ]
+        avg_reviews: float = (
+            sum(review_counts) / len(review_counts) if review_counts else 0.0
+        )
+
+        if avg_reviews > 5000 and trend_direction == "growing":
+            return "Very high demand — top sellers show strong review velocity"
+        if avg_reviews > 1000:
+            return "High demand — established market with active buyers"
+        if avg_reviews > 100:
+            return "Moderate demand — growing market with engaged buyers"
+        if avg_reviews > 0:
+            return "Low/emerging demand — limited sales evidence found"
+        return "Demand signal unclear — insufficient review data"
 
     # ------------------------------------------------------------------
     # Pure-Python market leader detector
@@ -609,7 +753,6 @@ Return this JSON structure exactly:
             return "unknown"
 
         seller_counts: Counter[str] = Counter(named_sellers)
-        # most_common(1)[0][0] returns the single most frequent seller name
         return seller_counts.most_common(1)[0][0]
 
     # ------------------------------------------------------------------
@@ -660,13 +803,13 @@ Return this JSON structure exactly:
         market just as clearly as a large raw listing count.
 
         Levels:
-        - ``"high"``: total listings > 500 OR any listing has > 1 000 reviews.
-        - ``"medium"``: total listings > 100 OR any listing has > 100 reviews.
+        - ``"high"``: total listings > 20 OR any listing has > 1 000 reviews.
+        - ``"medium"``: total listings > 8 OR any listing has > 100 reviews.
         - ``"low"``: neither condition met, or no data available.
 
         Args:
             listings: Extracted listing dicts, each with a ``review_count`` key.
-            total_active_listings: Count of Shopping API results before filtering.
+            total_active_listings: Count of API results before filtering.
 
         Returns:
             One of ``"low"``, ``"medium"``, or ``"high"``.
@@ -750,11 +893,10 @@ Return this JSON structure exactly:
         All values are computed from the listings list already in memory — no
         extra Gemini call is needed.
 
-        ``estimated_monthly_sales_range`` is always ``"insufficient data"``
-        because the pipeline does not collect historical review-velocity data
-        (which would require comparing review counts across two time points).
-        The field is preserved in the schema to signal the intent clearly rather
-        than omitting it.
+        ``estimated_demand_signal`` is initially set to a placeholder string
+        here; the caller (``run()``) overwrites it with the actual value after
+        Phase 2 completes, because the demand signal incorporates
+        ``trend_direction`` which is only available after the Gemini call.
 
         Args:
             listings: Extracted listing dicts, each expected to have ``rating``
@@ -764,11 +906,13 @@ Return this JSON structure exactly:
                 seller tenure and Gemini is no longer called for listings.
 
         Returns:
-            Dict with the four performance metric keys defined in the spec.
+            Dict with the four performance metric keys defined in the schema.
+            ``estimated_demand_signal`` is a placeholder pending Phase 2.
         """
         if not listings:
             return {
-                "estimated_monthly_sales_range": "insufficient data",
+                # Placeholder — run() overwrites this after Phase 2 completes.
+                "estimated_demand_signal": "pending trend analysis",
                 "avg_rating_to_rank": 0.0,
                 "avg_review_count_top_sellers": 0,
                 "market_leader_tenure_signal": tenure_signal,
@@ -795,8 +939,8 @@ Return this JSON structure exactly:
         )
 
         return {
-            # Monthly sales cannot be derived without historical review velocity data
-            "estimated_monthly_sales_range": "insufficient data",
+            # Placeholder — run() overwrites this after Phase 2 completes.
+            "estimated_demand_signal": "pending trend analysis",
             "avg_rating_to_rank": avg_rating,
             "avg_review_count_top_sellers": avg_reviews,
             "market_leader_tenure_signal": tenure_signal,
@@ -887,7 +1031,7 @@ Return this JSON structure exactly:
             "sweet_spot_price_range": {"min": 0.0, "max": 0.0},
             "market_leader": "unknown",
             "performance_metrics": {
-                "estimated_monthly_sales_range": "insufficient data",
+                "estimated_demand_signal": "No listing data available",
                 "avg_rating_to_rank": 0.0,
                 "avg_review_count_top_sellers": 0,
                 "market_leader_tenure_signal": "unknown",

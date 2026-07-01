@@ -737,11 +737,34 @@ class ReportAgent(BaseAgent):
                 risk_label: str = str(sup.get("risk_label", "UNKNOWN")).upper()
                 r_emoji: str = _RISK_EMOJI.get(risk_label, "")
 
+                # Graceful display for zero/missing values
+                price_disp: str = (
+                    "Contact supplier"
+                    if not isinstance(raw_price, (int, float)) or float(raw_price) == 0.0
+                    else price_display
+                )
+                moq_disp: str = (
+                    "Not specified"
+                    if int(sup.get("moq", 0) or 0) == 0
+                    else moq
+                )
+                shipping_cost_disp: str = (
+                    "Enquire"
+                    if shipping_cost == 0.0
+                    else f"{symbol}{shipping_cost:.2f}"
+                )
+                days_val: Any = sup.get("shipping_days")
+                delivery_disp: str = (
+                    "Check with supplier"
+                    if not days_val or str(days_val).strip().lower() in ("unknown", "none", "")
+                    else f"{days_val} days"
+                )
+
                 lines.append(f"  {idx}. {name}")
-                lines.append(f"     Price: {price_display}  |  MOQ: {moq}")
+                lines.append(f"     Price: {price_disp}  |  MOQ: {moq_disp}")
                 lines.append(
-                    f"     Shipping: {symbol}{shipping_cost:.2f}"
-                    f"  |  Delivery: {shipping_days} days"
+                    f"     Shipping: {shipping_cost_disp}"
+                    f"  |  Delivery: {delivery_disp}"
                 )
                 if rating is not None:
                     rating_line: str = f"     Rating: {rating}"
@@ -807,8 +830,8 @@ class ReportAgent(BaseAgent):
         if perf_metrics:
             lines.append("Performance Metrics:")
             lines.append(
-                f"  Est. Monthly Sales:"
-                f" {perf_metrics.get('estimated_monthly_sales_range', 'N/A')}"
+                f"  Demand Signal:"
+                f" {perf_metrics.get('estimated_demand_signal', 'N/A')}"
             )
             lines.append(
                 f"  Avg Rating (Top Sellers):"
