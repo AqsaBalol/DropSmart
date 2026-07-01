@@ -691,7 +691,7 @@ class ReportAgent(BaseAgent):
         product_name: str = context.get("product_name", "Unknown Product")
         marketplace: str = context.get("marketplace", "unknown")
         business_model: str = context.get(
-            "business_model_alias", context.get("business_model", "fbs")
+            "business_model", context.get("business_model_alias", "fbs")
         )
         marketplace_label: str = self._get_marketplace_label(marketplace)
         bm_label: str = self._get_business_model_label(business_model)

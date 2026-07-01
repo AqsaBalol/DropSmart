@@ -183,7 +183,7 @@ class FeeAgent(BaseAgent):
             )
 
         # --- Determine VAT rate (Daraz only) ---
-        vat_rate: float = self._determine_vat_rate(context)
+        vat_rate: float = self._determine_vat_rate(context) if marketplace == "daraz_pk" else 0.0
 
         # --- Read fee fields from Gemini output, with 0.0 as safe default ---
         commission_pct: float = float(gemini_data.get("commission_pct", 0.0))
