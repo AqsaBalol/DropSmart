@@ -311,12 +311,20 @@ class ReportAgent(BaseAgent):
             "Return this exact JSON structure with all fields populated:\n\n"
             "{\n"
             '  "executive_summary": "<2-3 sentence overview for the seller: opportunity, margin, and risk>",\n'
-            '  "supplier_recommendation": "<1-2 sentences: which supplier to use and why, citing reliability and price>",\n'
+            '  "supplier_recommendation": "<1-2 sentences: summarise what '
+            'suppliers were found and what the seller should verify — do '
+            'NOT recommend one over others since price data is unavailable. '
+            'Focus on what to ask each supplier (MOQ, price, shipping time)>",\n'
             '  "competitor_insights": "<2-3 sentences: competition level, pricing landscape, and positioning advice>",\n'
             '  "fee_breakdown_text": "<prose summary of all fee components listed above, each named and valued>",\n'
             '  "margin_summary_text": "<2 sentences: net profit per unit, margin %, and break-even price>",\n'
             '  "risk_summary_text": "<2-3 sentences: overall risk level, top risks, what to watch>",\n'
-            f'  "listing_title_draft": "<SEO-optimised title under {_MAX_TITLE_CHARS} characters incorporating these keywords: {keywords_str}>",\n'
+            f'  "listing_title_draft": "<SEO-optimised title under {_MAX_TITLE_CHARS} characters incorporating these keywords: {keywords_str}. '
+            'CRITICAL: Never use competitor brand names in the title '
+            '(e.g. JBL, Sony, Apple, Samsung, Audionic, or any brand '
+            'name found in the competitor listings above). Use only '
+            'generic descriptive keywords. Violating this causes '
+            'marketplace listing removal.>",\n'
             '  "listing_description_draft": "<3-4 sentence product description that highlights key features and targets buyer intent>",\n'
             '  "verdict_reasoning": ["✅ <positive point backed by data above>", "⚠️ <caution point backed by data above>"],\n'
             '  "recommended_strategy": ["<actionable step 1>", "<actionable step 2>", "<actionable step 3>"],\n'
@@ -480,9 +488,8 @@ class ReportAgent(BaseAgent):
                 f"The go/no-go signal is {go_no_go}."
             ),
             "supplier_recommendation": (
-                f"Recommended supplier: {recommended_supplier} "
-                f"(reliability {rec_reliability}/10). "
-                "Verify MOQ and shipping lead time before placing the first order."
+                f"Suppliers found: {recommended_supplier}. "
+                "Contact directly for pricing and MOQ before listing."
             ),
             "competitor_insights": (
                 f"The {marketplace} market for {product_name} shows {market_saturation} saturation "
@@ -776,7 +783,10 @@ class ReportAgent(BaseAgent):
                     risk_line += f" {r_emoji}"
                 lines.append(risk_line)
 
-            lines.append(f"Recommended Supplier: {recommended_supplier}")
+            lines.append(
+                "⚠️  Contact each supplier directly for current per-unit "
+                "cost, MOQ, and shipping rates before listing."
+            )
 
         # ── 3. Competitor Analysis ─────────────────────────────────────────
         _section(f"🏆 COMPETITOR ANALYSIS — {marketplace_label}")
@@ -907,29 +917,40 @@ class ReportAgent(BaseAgent):
         # ── 5. Margin Calculation ──────────────────────────────────────────
         _section(f"💰 MARGIN CALCULATION — {marketplace_label} {bm_label}")
         margin_result: dict = context.get("margin_result", {})
-        selling_price: float = float(margin_result.get("selling_price", 0.0))
-        breakdown: list[str] = margin_result.get("calculation_breakdown", [])
-        monthly: dict = margin_result.get("monthly_profit_potential", {})
+        if margin_result.get("data_unavailable"):
+            lines.append(
+                "⚠️  Selling price unavailable — no competitor listings found."
+            )
+            lines.append(
+                "     Margin cannot be calculated without a selling price."
+            )
+            lines.append(
+                "     Verify competitor prices manually and re-run."
+            )
+        else:
+            selling_price: float = float(margin_result.get("selling_price", 0.0))
+            breakdown: list[str] = margin_result.get("calculation_breakdown", [])
+            monthly: dict = margin_result.get("monthly_profit_potential", {})
 
-        lines.append(f"Recommended Selling Price: {symbol}{selling_price:.2f}")
-        lines.append("")
-        lines.extend(breakdown)
-
-        if monthly:
+            lines.append(f"Recommended Selling Price: {symbol}{selling_price:.2f}")
             lines.append("")
-            lines.append("Monthly Profit Potential:")
-            lines.append(
-                f"   50 units/month → {symbol}"
-                f"{float(monthly.get('50_units', 0.0)):.2f}"
-            )
-            lines.append(
-                f"  100 units/month → {symbol}"
-                f"{float(monthly.get('100_units', 0.0)):.2f}"
-            )
-            lines.append(
-                f"  200 units/month → {symbol}"
-                f"{float(monthly.get('200_units', 0.0)):.2f}"
-            )
+            lines.extend(breakdown)
+
+            if monthly:
+                lines.append("")
+                lines.append("Monthly Profit Potential:")
+                lines.append(
+                    f"   50 units/month → {symbol}"
+                    f"{float(monthly.get('50_units', 0.0)):.2f}"
+                )
+                lines.append(
+                    f"  100 units/month → {symbol}"
+                    f"{float(monthly.get('100_units', 0.0)):.2f}"
+                )
+                lines.append(
+                    f"  200 units/month → {symbol}"
+                    f"{float(monthly.get('200_units', 0.0)):.2f}"
+                )
 
         # ── 6. Risk Assessment ─────────────────────────────────────────────
         _section("⚠️  RISK ASSESSMENT")

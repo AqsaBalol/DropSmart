@@ -162,12 +162,55 @@ class MarginAgent(BaseAgent):
         if fee_data.get("fee_verification_warning", ""):
             warnings.append(fee_data["fee_verification_warning"])
 
-        # --- Warn if selling price is missing — margin cannot be calculated ---
+        # --- Early return when selling price is unavailable ---
         if selling_price == 0.0:
-            warnings.append(
-                "No selling price available (competitor average price not found). "
-                "margin_pct and net_profit_per_unit are 0 — enter a selling price manually."
-            )
+            currency_str = "PKR" if marketplace == "daraz_pk" else "USD"
+            self._log_end("margin calculation", success=False)
+            return {
+                "margin_result": {
+                    "product_name": product_name,
+                    "marketplace": marketplace,
+                    "business_model": business_model,
+                    "selling_price": 0.0,
+                    "data_unavailable": True,
+                    "data_unavailable_reason": (
+                        "No competitor pricing data found — selling price "
+                        "cannot be determined automatically."
+                    ),
+                    "currency": currency_str,
+                    "supplier_cost_is_assumed": False,
+                    "monthly_profit_potential": {
+                        "50_units": 0.0,
+                        "100_units": 0.0,
+                        "200_units": 0.0,
+                    },
+                    "calculation_breakdown": [
+                        "Selling Price: UNKNOWN — no competitor data found.",
+                        "Enter your target selling price to calculate margin.",
+                    ],
+                    "warnings": [
+                        "No competitor pricing found — selling price unknown. "
+                        "Margin cannot be calculated. Verify competitor prices "
+                        "and re-run, or enter your target price manually."
+                    ],
+                    "net_profit_per_unit": 0.0,
+                    "margin_pct": 0.0,
+                    "break_even_price": 0.0,
+                    "total_deductions": 0.0,
+                    "supplier_cost": 0.0,
+                    "packaging_cost": 0.0,
+                    "courier_cost": 0.0,
+                    "fulfillment_prep_cost": 0.0,
+                    "supplier_shipping_cost": 0.0,
+                    "commission_amount": 0.0,
+                    "commission_vat_amount": 0.0,
+                    "payment_processing_amount": 0.0,
+                    "payment_processing_vat_amount": 0.0,
+                    "handling_fee_amount": 0.0,
+                    "handling_fee_vat_amount": 0.0,
+                    "platform_specific_fees_total": 0.0,
+                }
+            }
 
         # ----------------------------------------------------------------
         # CORE ARITHMETIC — every formula from the spec, in order

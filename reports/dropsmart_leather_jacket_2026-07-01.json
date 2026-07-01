@@ -1,0 +1,47 @@
+{
+  "product_name": "leather jacket",
+  "marketplace": "amazon_us",
+  "go_no_go_verdict": "CAUTION",
+  "executive_summary": "While market saturation is low, current data indicates a significant loss per unit and a high overall risk level due to margin issues and seasonality. Proceed with extreme caution and focus on cost reduction and strategic pricing adjustments.",
+  "supplier_recommendation": "skswholesales.com is recommended due to its MOQ of 20, despite a reliability score of 5/10. apparelbus.com and amrikaleather.com also have a 5/10 reliability, but skswholesales.com is listed first as a recommended option.",
+  "competitor_insights": "The market saturation for this product is currently low, suggesting potential for new entrants. However, the average market price and price range are both listed as 0.0 USD, making it difficult to establish a competitive pricing strategy without further data. Focus on differentiation and value.",
+  "fee_breakdown_text": "Commission is 0.0%, Payment Processing is 0.0%, Handling Fee is 0.0 USD, and VAT on Commission is 0.0%, resulting in a Total Fee % of 0.0%. However, Missing Fees Flagged is True, indicating potential unlisted costs.",
+  "margin_summary_text": "The net profit per unit is -5.0 USD with a margin of 0.0%, meaning you are selling at a loss. The break-even price is 5.0 USD, which must be achieved to cover costs.",
+  "risk_summary_text": "The overall risk level is medium with a score of 44/100, signaled by a 'CAUTION' go/no-go. Top risks include a negative margin of 0.0%, the product being seasonal with low current demand, and supplier reliability at 5/10.",
+  "listing_title_draft": "Leather Jacket",
+  "listing_description_draft": "Experience timeless style and durability with this premium leather jacket. Crafted for comfort and designed to last, it offers a versatile addition to any wardrobe. Perfect for layering and suitable for various occasions. Invest in quality and classic fashion.",
+  "verdict_reasoning": [
+    "✅ Market Saturation is low",
+    "⚠️ Margin is 0.0% — selling at a loss.",
+    "⚠️ Seasonal product — currently in low-demand period.",
+    "⚠️ Supplier reliability score 5/10 — adequate, monitor quality.",
+    "⚠️ Missing Fees Flagged: True"
+  ],
+  "recommended_strategy": [
+    "Negotiate lower supplier costs to improve margin.",
+    "Adjust pricing to reach the break-even point of 5.0 USD.",
+    "Monitor seasonality and plan inventory for peak demand periods.",
+    "Investigate missing fees to accurately calculate total deductions."
+  ],
+  "listing_bullets": [
+    "Durable and high-quality leather construction",
+    "Timeless and versatile style",
+    "Comfortable for all-day wear",
+    "Ideal for layering",
+    "Classic fashion statement"
+  ],
+  "recommended_selling_price": 0.0,
+  "calculation_breakdown": [
+    "Selling Price:          $      0.00",
+    "────────────────────────────────────────────",
+    "  Supplier Cost:      - $      0.00",
+    "  Ship to Warehouse:  - $      5.00",
+    "────────────────────────────────────────────",
+    "────────────────────────────────────────────",
+    "Net Profit per Unit:    $     -5.00",
+    "Margin %:                     0.00%",
+    "Break-Even Price:       $      5.00"
+  ],
+  "generated_at": "2026-07-01T17:17:22.478368",
+  "report_format": "text"
+}

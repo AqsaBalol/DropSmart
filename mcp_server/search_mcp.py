@@ -128,7 +128,7 @@ _call_timestamps: deque[float] = deque()
 def _check_rate_limit() -> None:
     """Enforces a sliding-window rate limit of 10 Serper calls per 60 seconds.
 
-    Also introduces a minimum 0.5-second delay between ALL calls — not only
+    Also introduces a minimum 1.5-second delay between ALL calls — not only
     when the cap is reached. This prevents burst traffic from hitting the API
     in rapid succession (e.g. when FeeAgent and SupplierAgent run back-to-back)
     which would exhaust the window before downstream agents can execute.
@@ -138,7 +138,7 @@ def _check_rate_limit() -> None:
     """
     # Minimum inter-call spacing — applied unconditionally before rate-limit
     # check so that bursts from multiple agents are naturally spread out.
-    time.sleep(0.5)
+    time.sleep(1.5)
 
     now = datetime.now(timezone.utc).timestamp()
     window_start = now - _RATE_LIMIT_WINDOW_SECONDS

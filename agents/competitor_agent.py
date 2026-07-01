@@ -10,9 +10,11 @@ Phase 1 — Listing fetch (marketplace-specific, no Gemini):
 - walmart_us: uses ``search_competitor_listings_live`` and keeps only results
   whose ``source`` field contains "walmart" — this filter works correctly
   because Walmart appears as the source in Google Shopping results.
-- amazon_us / etsy_us: uses ``search_competitor_listings_live`` with NO source
-  filter — Google Shopping shows brand names (not "amazon" / "etsy") as the
-  source field, so unfiltered results give far better coverage.
+- amazon_us / etsy_us: uses organic ``web_search`` (3 queries each, same
+  pattern as daraz_pk) — Google Shopping does not reliably index Amazon or
+  Etsy inventory, and uses brand/seller names (not "amazon" / "etsy") as
+  the source field, making the Shopping API an unreliable source for these
+  marketplaces.
 
 Phase 2 — Trend synthesis (always runs, one Gemini call):
     Runs 2 web_search queries for demand direction and seasonality. Gemini
@@ -93,12 +95,25 @@ _SWEET_SPOT_TRIM_RATIO: float = 0.2
 # ("pro", "true"), version strings ("v2", "ii"), and single digits that produce
 # noise rather than meaningful search-intent signal.
 _STOP_WORDS: frozenset[str] = frozenset({
-    "a", "an", "the", "and", "or", "for", "with", "in", "of", "to",
-    "at", "by", "from", "on", "is", "it", "as", "are", "be", "was",
-    "has", "its", "this", "that", "true", "pro", "v2",
-    "1", "2", "3", "4", "5", "ii",
-    # Additional common listing filler words
-    "best", "buy", "new", "set", "top",
+    # Articles, prepositions, conjunctions
+    "a", "an", "the", "and", "or", "for", "with", "in", "of",
+    "to", "at", "by", "from", "on", "is", "it", "as", "are",
+    "be", "was", "has", "its", "this", "that", "get", "vs",
+    # Marketplace names — appear in titles but mean nothing to buyers
+    "daraz", "walmart", "amazon", "etsy", "pk",
+    # Generic shopping words — noise in any marketplace context
+    "online", "buy", "best", "price", "shop", "store", "sale",
+    "deal", "offer", "free", "shipping", "delivery", "official",
+    "original", "new", "cheap", "pakistan", "usa", "reviews",
+    "review", "compare", "listing", "listed", "find", "top",
+    "rated", "get", "up", "now",
+    # Product adjective noise
+    "true", "pro", "max", "plus", "lite", "air", "go", "x",
+    "v2", "ii", "s", "i",
+    # Common filler
+    "best", "set",
+    # Pure digits
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
 })
 
 # Regional peak-sales events injected into the seasonality trend query.
@@ -117,12 +132,12 @@ class CompetitorAgent(BaseAgent):
     """Analyses the live competitor landscape on the target marketplace.
 
     Phase 1 — Listing fetch (marketplace-specific, no Gemini):
-        daraz_pk uses organic ``web_search`` (3 queries); walmart_us uses the
-        Shopping API with source filtering; amazon_us and etsy_us use the
-        Shopping API with all source filtering disabled (Google Shopping does
-        not use "amazon" or "etsy" as source — filtering would return nothing).
-        Keywords, market_leader, price stats, and saturation are derived from
-        the structured listings in pure Python.
+        daraz_pk, amazon_us, and etsy_us all use organic ``web_search``
+        (3 queries each) — Daraz is absent from Google Shopping, and Amazon/
+        Etsy are unreliably indexed there. walmart_us uses the Shopping API
+        with source filtering for "walmart". Keywords, market_leader, price
+        stats, and saturation are derived from the structured listings in pure
+        Python.
 
     Phase 2 — Trend synthesis (one Gemini call, always runs):
         Runs 2 web_search queries focused on demand direction and seasonality.
@@ -271,16 +286,57 @@ class CompetitorAgent(BaseAgent):
                     "off_marketplace": False,
                 })
 
-        else:
-            # Amazon/Etsy/Walmart: use the Shopping API.
-            # For amazon_us and etsy_us, source filtering is disabled in the
-            # MCP tool — Google Shopping uses brand names as the source field,
-            # not "amazon" or "etsy", so unfiltered results give better coverage.
-            if marketplace in ("amazon_us", "etsy_us"):
-                self._logger.info(
-                    "Amazon/Etsy: returning all Shopping API results without source filtering"
+        elif marketplace in ("amazon_us", "etsy_us"):
+            # Amazon and Etsy are not reliably indexed in Google Shopping —
+            # Google Shopping uses brand/seller names as the source field,
+            # not "amazon" or "etsy", so the Shopping API returns near-zero
+            # useful results. Organic web_search is a better signal source.
+            marketplace_domain = (
+                "amazon.com" if marketplace == "amazon_us" else "etsy.com"
+            )
+            marketplace_label_log = (
+                "Amazon" if marketplace == "amazon_us" else "Etsy"
+            )
+            self._logger.info(
+                "%s: using organic search fallback (Shopping API unreliable "
+                "for %s inventory)", marketplace_label_log, marketplace_label_log
+            )
+            organic_queries = [
+                f"site:{marketplace_domain} {product} price customer reviews",
+                f"{product} {marketplace_label_log} best seller 2026 price rating reviews",
+                f"{marketplace_domain} {product} top rated listings price",
+            ]
+            raw_organic_us: list[dict[str, Any]] = []
+            for q in organic_queries:
+                try:
+                    results = web_search(query=q, num_results=5)
+                    raw_organic_us.extend(results)
+                    all_queries_ran.append(q)
+                except Exception as exc:
+                    self._logger.warning(
+                        "%s organic query failed (skipping): %r — %s",
+                        marketplace_label_log, q, exc
+                    )
+            total_active_listings = len(raw_organic_us)
+            for item in raw_organic_us[:_MAX_LISTINGS]:
+                snippet_price: float = self._parse_price_string(
+                    str(item.get("snippet", "") or "")
                 )
+                listings.append({
+                    "title": str(item.get("title", "")),
+                    "price": snippet_price,
+                    "currency": currency,
+                    "rating": 0.0,
+                    "review_count": 0,
+                    "seller_name": marketplace_label_log,
+                    "source_url": str(item.get("url", "")),
+                    "data_retrieved_date": today_str,
+                    "off_marketplace": False,
+                })
 
+        else:
+            # walmart_us: Shopping API with source filter for "walmart".
+            # Walmart appears reliably as "walmart" in Google Shopping source field.
             raw_listings: list[dict[str, Any]] = []
             try:
                 raw_listings = search_competitor_listings_live(
@@ -607,24 +663,24 @@ Return this JSON structure exactly:
     def _extract_keywords_from_titles(
         self, listings: list[dict[str, Any]]
     ) -> list[dict[str, str]]:
-        """Extracts high-frequency bigrams and long unigrams from listing titles.
+        """Extracts high-frequency bigrams from listing titles.
 
-        The previous single-token approach produced brand fragments like "jbl",
-        "vibe", or "true". This version generates bigrams (2-word phrases) and
-        also includes unigrams only when they are 5+ characters long, which
-        eliminates short brand tokens while keeping meaningful terms like
-        "earbuds", "wireless", "bluetooth".
+        Generates only bigrams (2-word phrases) from filtered tokens — single
+        tokens are excluded because they produce brand fragments and generic noise.
+        After counting, a deduplication pass removes any bigram that is a
+        substring of a higher- or equal-frequency bigram, avoiding redundant
+        sub-phrases.
 
         Algorithm:
         1. Tokenise all titles into lowercase alphanumeric words.
         2. Filter out stop words and purely numeric tokens.
-        3. Generate bigrams (adjacent word pairs) from the filtered sequence.
-        4. Collect long unigrams (length >= 5) from the same filtered sequence.
-        5. Merge bigrams and unigrams; each title contributes at most one count
-           per term (prevents a repeated word in one title from dominating).
-        6. Return the top ``_KEYWORD_COUNT`` terms with volume signals.
+        3. Generate bigrams from the filtered sequence per title.
+        4. Each title contributes at most one count per bigram.
+        5. Deduplicate: remove a bigram if it appears as a substring of another
+           bigram with equal or higher frequency.
+        6. Return the top ``_KEYWORD_COUNT`` entries with volume signals.
 
-        Volume signal thresholds (cross-title occurrence count):
+        Volume signal thresholds:
         - ``"high"``: appears in 3 or more titles.
         - ``"medium"``: appears in exactly 2 titles.
         - ``"low"``: appears in exactly 1 title.
@@ -637,7 +693,7 @@ Return this JSON structure exactly:
             A list of up to ``_KEYWORD_COUNT`` dicts, each with ``"keyword"``
             and ``"volume_signal"`` keys, ordered by frequency descending.
         """
-        term_title_counts: Counter[str] = Counter()
+        bigram_counts: Counter[str] = Counter()
 
         for listing in listings:
             title: str = listing.get("title", "").lower()
@@ -649,19 +705,31 @@ Return this JSON structure exactly:
                 if tok not in _STOP_WORDS and not tok.isdigit()
             ]
 
-            # Bigrams from the filtered token sequence
+            # Bigrams only — each title contributes at most one count per bigram
             bigrams: set[str] = set()
             for i in range(len(filtered) - 1):
                 bigrams.add(f"{filtered[i]} {filtered[i + 1]}")
 
-            # Unigrams: only 5+ character tokens to avoid short brand fragments
-            unigrams: set[str] = {tok for tok in filtered if len(tok) >= 5}
+            bigram_counts.update(bigrams)
 
-            # Use set union so each title contributes at most 1 count per term
-            term_title_counts.update(bigrams | unigrams)
+        # Sort by count descending for deduplication
+        ranked: list[tuple[str, int]] = bigram_counts.most_common()
+
+        # Deduplication: remove bigram A if it is a substring of bigram B
+        # with equal or higher frequency. Iterating from highest frequency
+        # downward ensures high-frequency terms are kept and low-frequency
+        # sub-phrases are dropped.
+        deduplicated: list[tuple[str, int]] = []
+        for candidate, count in ranked:
+            is_substring = any(
+                candidate in existing_kw and count <= existing_count
+                for existing_kw, existing_count in deduplicated
+            )
+            if not is_substring:
+                deduplicated.append((candidate, count))
 
         results: list[dict[str, str]] = []
-        for keyword, count in term_title_counts.most_common(_KEYWORD_COUNT):
+        for keyword, count in deduplicated[:_KEYWORD_COUNT]:
             if count >= 3:
                 volume_signal = "high"
             elif count >= 2:

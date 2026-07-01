@@ -1,0 +1,50 @@
+{
+  "product_name": "wireless earbuds",
+  "marketplace": "daraz_pk",
+  "go_no_go_verdict": "CAUTION",
+  "executive_summary": "This report covers wireless earbuds on Daraz PK, indicating a promising product category. However, the current strategy projects a 0.0% margin, leading to a loss. The overall risk level is medium, advising caution due to margin and market saturation challenges.",
+  "supplier_recommendation": "Leedor Industrial Co., Ltd. is the recommended supplier, offering a cost of 0.0 PKR per unit with a reliability rating of 7/10. While the cost is favorable, further verification of this pricing is advised.",
+  "competitor_insights": "The Daraz PK marketplace for wireless earbuds shows medium saturation, making visibility important. With an average market price of 0.0 PKR and a price range of 0.0 – 0.0 PKR, establishing a competitive price point requires careful analysis. Optimized listings are key to standing out.",
+  "fee_breakdown_text": "Fees include a 5.0% Commission, 2.25% for Payment Processing, a Handling Fee of 60.0 PKR, and VAT on Commission at 0.15%. The total fee percentage amounts to 7.25%.",
+  "margin_summary_text": "The current selling price yields a Net Profit per Unit of -290.09 PKR, resulting in a 0.0% margin. To break even, a minimum selling price of 290.09 PKR is required.",
+  "risk_summary_text": "The overall risk level is medium with a score of 57/100, prompting a 'CAUTION' signal. Key concerns include a 0.0% Margin Risk, leading to sales at a loss, and Market Saturation Risk requiring an optimised listing for visibility.",
+  "listing_title_draft": "Wireless Earbuds for Daraz PK – Best Price Wireless Earbuds",
+  "listing_description_draft": "Experience superior audio with our wireless earbuds, designed for on-the-go lifestyles. Enjoy seamless connectivity and clear sound, perfect for music, calls, and more. Find the best price for high-quality wireless earbuds on Daraz PK. Optimize your listening experience today.",
+  "verdict_reasoning": [
+    "✅ Recommended supplier Leedor Industrial Co., Ltd. offers a 0.0 PKR unit cost with 7/10 reliability.",
+    "⚠️ Margin is 0.0%, resulting in a Net Profit per Unit of -290.09 PKR, indicating sales at a loss.",
+    "⚠️ Overall Risk Level is medium (57/100), with a 'CAUTION' Go/No-Go Signal.",
+    "⚠️ Market Saturation is medium, requiring an optimized listing for visibility and competitive positioning.",
+    "⚠️ Competition Risk is moderate, demanding strategic pricing given the 0.0 PKR market price data."
+  ],
+  "recommended_strategy": [
+    "Immediately re-evaluate the selling price to exceed the 290.09 PKR break-even point.",
+    "Optimize the product listing using all provided SEO keywords to enhance visibility in a medium saturation market.",
+    "Investigate the 0.0 PKR supplier cost and market pricing data to establish realistic financial projections.",
+    "Develop a competitive pricing strategy that ensures profitability above the break-even price."
+  ],
+  "listing_bullets": [
+    "Immersive wireless sound experience on Daraz.",
+    "Comfortable earbuds for all-day wear.",
+    "Crystal-clear audio for calls and music.",
+    "Find the best price for quality wireless earbuds.",
+    "Seamless connectivity for ultimate convenience."
+  ],
+  "recommended_selling_price": 0.0,
+  "calculation_breakdown": [
+    "Selling Price:          PKR       0.00",
+    "────────────────────────────────────────────",
+    "  Supplier Cost:      - PKR       0.00",
+    "  Packaging Cost:     - PKR      30.00",
+    "  Courier / Shipping: - PKR     200.00",
+    "────────────────────────────────────────────",
+    "  Handling Fee (tiered): - PKR      60.00",
+    "  VAT on Handling Fee (0%): - PKR       0.09",
+    "────────────────────────────────────────────",
+    "Net Profit per Unit:    PKR    -290.09",
+    "Margin %:                     0.00%",
+    "Break-Even Price:       PKR     290.09"
+  ],
+  "generated_at": "2026-07-01T17:24:58.466615",
+  "report_format": "text"
+}

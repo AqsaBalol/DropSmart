@@ -535,15 +535,15 @@ Return a JSON object in exactly this structure:
             context: Session context. Reads ``province`` key (case-insensitive).
 
         Returns:
-            ``0.16`` for Punjab sellers, ``0.15`` for all other provinces.
-            Returns ``0.15`` as the safe default when ``province`` is absent —
+            ``16.0`` for Punjab sellers, ``15.0`` for all other provinces.
+            Returns ``15.0`` as the safe default when ``province`` is absent —
             this is the lower (less optimistic) rate, consistent with the spec's
             rule to use the most conservative estimate when data is uncertain.
         """
         province: str = context.get("province", "").strip().lower()
 
         if province == "punjab":
-            return 0.16
+            return 16.0
 
         if not province:
             # Province missing from context — return safe default and log so
@@ -554,7 +554,7 @@ Return a JSON object in exactly this structure:
             )
 
         # All other provinces (Sindh, KPK, Balochistan) use 15%
-        return 0.15
+        return 15.0
 
     # ------------------------------------------------------------------
     # Handling fee tier calculator
