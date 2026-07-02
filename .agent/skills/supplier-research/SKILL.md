@@ -25,6 +25,12 @@ FBS bulk purchasing or FBM warehouse shipping. The skill returns a ranked list o
 with full details and a clear recommended pick, giving the Margin Calculator Agent the
 supplier cost data it needs to run calculations.
 
+**Note:** In DropSmart's current implementation, this skill is invoked
+directly by the Orchestrator (agents/orchestrator.py) as one fixed step
+in a sequential pipeline, not via dynamic trigger-phrase matching. The
+trigger phrases below document the skill's intended scope and are not
+an active routing mechanism in this version.
+
 ## When to Use
 
 - Orchestrator Agent has collected product name and business model from seller

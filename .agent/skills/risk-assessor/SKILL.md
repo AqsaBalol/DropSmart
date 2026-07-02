@@ -28,6 +28,12 @@ risk level of LOW, MEDIUM, or HIGH. Every score must be grounded in real data fr
 agents — no assumptions or gut-feel scoring is permitted. The scorecard is the final input
 the seller sees before the HITL checkpoint, where they decide whether to approve the report.
 
+**Note:** In DropSmart's current implementation, this skill is invoked
+directly by the Orchestrator (agents/orchestrator.py) as one fixed step
+in a sequential pipeline, not via dynamic trigger-phrase matching. The
+trigger phrases below document the skill's intended scope and are not
+an active routing mechanism in this version.
+
 ## When to Use
 
 - Margin Calculation has completed and `margin_pct` is in session context

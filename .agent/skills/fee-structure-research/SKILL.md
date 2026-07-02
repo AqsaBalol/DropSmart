@@ -30,6 +30,20 @@ the platform YAML config. The output feeds directly into the Margin Calculator A
 requires a complete, named, sourced fee breakdown before it can produce its line-by-line
 deduction table.
 
+**Implementation status:** Rules 4 (tiered fee logic, no flat-rate
+assumption) and 5 (missing fee detection) are implemented in
+agents/fee_agent.py. Rule 2 (source URL) is partially implemented —
+URLs are collected but not enforced per-fee as UNVERIFIED. Rules 1
+(multi-source conflict resolution) and 3 (date freshness checking),
+and the automatic retry-on-missing described in step 7b, are specified
+here but not yet implemented in the current fee_agent.py.
+
+**Note:** In DropSmart's current implementation, this skill is invoked
+directly by the Orchestrator (agents/orchestrator.py) as one fixed step
+in a sequential pipeline, not via dynamic trigger-phrase matching. The
+trigger phrases below document the skill's intended scope and are not
+an active routing mechanism in this version.
+
 ## When to Use
 
 - Competitor Analysis has already completed and selling price is known

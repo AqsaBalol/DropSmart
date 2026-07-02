@@ -567,6 +567,14 @@ search_competitor_listings(
 
 ### Fee Research Risk Mitigation
 
+**Implementation status:** Rules 4 (tiered fee logic, no flat-rate
+assumption) and 5 (missing fee detection) are implemented in
+agents/fee_agent.py. Rule 2 (source URL) is partially implemented —
+URLs are collected but not enforced per-fee as UNVERIFIED. Rules 1
+(multi-source conflict resolution) and 3 (date freshness checking),
+and the automatic retry-on-missing described in step 7b, are specified
+here but not yet implemented in the current fee_agent.py.
+
 These five rules apply to the Fee Structure Research Agent on **all platforms** — Daraz,
 Walmart, Amazon, and Etsy. No exception is permitted for any marketplace or business model.
 

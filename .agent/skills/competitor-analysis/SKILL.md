@@ -28,6 +28,12 @@ whether the market is growing or shrinking, whether the product is seasonal, and
 keywords drive rankings. This data feeds directly into the Margin Calculator (for realistic
 selling price) and the Risk Assessor (for saturation and competition scores).
 
+**Note:** In DropSmart's current implementation, this skill is invoked
+directly by the Orchestrator (agents/orchestrator.py) as one fixed step
+in a sequential pipeline, not via dynamic trigger-phrase matching. The
+trigger phrases below document the skill's intended scope and are not
+an active routing mechanism in this version.
+
 ## When to Use
 
 - Supplier Research has already completed and results are in session context

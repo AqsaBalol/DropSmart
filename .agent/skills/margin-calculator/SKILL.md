@@ -26,6 +26,12 @@ unit of money goes. This transparency is a core design principle of DropSmart: s
 see every deduction are less likely to be surprised by real-world results. The output feeds
 directly into the Risk Assessor Agent, which uses margin percentage to score Margin Adequacy.
 
+**Note:** In DropSmart's current implementation, this skill is invoked
+directly by the Orchestrator (agents/orchestrator.py) as one fixed step
+in a sequential pipeline, not via dynamic trigger-phrase matching. The
+trigger phrases below document the skill's intended scope and are not
+an active routing mechanism in this version.
+
 ## When to Use
 
 - Fee Structure Research has completed and all fees are in session context

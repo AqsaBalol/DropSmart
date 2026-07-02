@@ -1,6 +1,3 @@
-# Google ADK (Agent Development Kit) — framework for building multi-agent systems with Gemini
-google-adk
-
 # MCP (Model Context Protocol) — standard for tool integration between AI models and external services
 mcp
 
