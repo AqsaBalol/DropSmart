@@ -120,6 +120,10 @@ class MarginAgent(BaseAgent):
 
         selling_price: float = self._extract_selling_price(context, warnings)
         supplier_cost: float = self._extract_supplier_cost(context, currency, warnings)
+        # supplier_cost of 0.0 means no real cost data was found — the margin
+        # figures below are then computed against a fake zero cost and must
+        # be flagged as unreliable to the seller.
+        supplier_cost_is_assumed: bool = (supplier_cost == 0.0)
         # Shipping cost charged by the supplier (separate from seller's courier cost)
         supplier_shipping_cost: float = self._extract_supplier_shipping_cost(context)
 
@@ -178,7 +182,7 @@ class MarginAgent(BaseAgent):
                         "cannot be determined automatically."
                     ),
                     "currency": currency_str,
-                    "supplier_cost_is_assumed": False,
+                    "supplier_cost_is_assumed": supplier_cost_is_assumed,
                     "monthly_profit_potential": {
                         "50_units": 0.0,
                         "100_units": 0.0,
@@ -188,7 +192,7 @@ class MarginAgent(BaseAgent):
                         "Selling Price: UNKNOWN — no competitor data found.",
                         "Enter your target selling price to calculate margin.",
                     ],
-                    "warnings": [
+                    "warnings": warnings + [
                         "No competitor pricing found — selling price unknown. "
                         "Margin cannot be calculated. Verify competitor prices "
                         "and re-run, or enter your target price manually."
@@ -323,6 +327,7 @@ class MarginAgent(BaseAgent):
                 "business_model": business_model,
                 "selling_price": selling_price,
                 "supplier_cost": supplier_cost,
+                "supplier_cost_is_assumed": supplier_cost_is_assumed,
                 "supplier_shipping_cost": supplier_shipping_cost,
                 "packaging_cost": packaging_cost,
                 "fulfillment_prep_cost": fulfillment_prep_cost,

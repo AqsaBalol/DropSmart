@@ -213,9 +213,6 @@ class ReportAgent(BaseAgent):
         # --- Supplier data ---
         supplier_result: dict = context.get("supplier_result", {})
         suppliers: list[dict] = supplier_result.get("suppliers", [])
-        recommended_supplier: str = supplier_result.get(
-            "recommended_supplier", "Unknown"
-        )
         # Compact supplier table — at most 3 rows to keep the prompt concise
         supplier_rows: str = "\n".join(
             f"  - {s.get('name', 'N/A')}: "
@@ -281,8 +278,7 @@ class ReportAgent(BaseAgent):
             f"Business Model: {business_model}\n"
             f"Currency: {currency}\n\n"
             "--- SUPPLIERS ---\n"
-            f"Recommended: {recommended_supplier}\n"
-            f"Options:\n{supplier_rows}\n\n"
+            f"Suppliers found (list all — do not single one out):\n{supplier_rows}\n\n"
             "--- COMPETITORS ---\n"
             f"Average Market Price: {avg_price} {currency}\n"
             f"Price Range: {price_range.get('min', 'N/A')} – {price_range.get('max', 'N/A')} {currency}\n"
@@ -312,9 +308,11 @@ class ReportAgent(BaseAgent):
             "{\n"
             '  "executive_summary": "<2-3 sentence overview for the seller: opportunity, margin, and risk>",\n'
             '  "supplier_recommendation": "<1-2 sentences: summarise what '
-            'suppliers were found and what the seller should verify — do '
-            'NOT recommend one over others since price data is unavailable. '
-            'Focus on what to ask each supplier (MOQ, price, shipping time)>",\n'
+            'suppliers were found and what the seller should verify. If ALL '
+            'suppliers in the SUPPLIERS section above show no price data, '
+            'say so explicitly instead of naming any supplier as best — do '
+            'NOT invent a recommendation from missing data. Focus on what to '
+            'ask each supplier (MOQ, price, shipping time)>",\n'
             '  "competitor_insights": "<2-3 sentences: competition level, pricing landscape, and positioning advice>",\n'
             '  "fee_breakdown_text": "<prose summary of all fee components listed above, each named and valued>",\n'
             '  "margin_summary_text": "<2 sentences: net profit per unit, margin %, and break-even price>",\n'
@@ -928,6 +926,14 @@ class ReportAgent(BaseAgent):
                 "     Verify competitor prices manually and re-run."
             )
         else:
+            if margin_result.get("supplier_cost_is_assumed"):
+                lines.append(
+                    "⚠️  Supplier cost is UNVERIFIED (defaulted to 0) — "
+                    "margin and profit figures below are NOT reliable. "
+                    "Enter actual supplier cost before trusting this number."
+                )
+                lines.append("")
+
             selling_price: float = float(margin_result.get("selling_price", 0.0))
             breakdown: list[str] = margin_result.get("calculation_breakdown", [])
             monthly: dict = margin_result.get("monthly_profit_potential", {})
