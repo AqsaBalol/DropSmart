@@ -934,6 +934,14 @@ class ReportAgent(BaseAgent):
                 )
                 lines.append("")
 
+            if margin_result.get("fees_incomplete"):
+                lines.append(
+                    "⚠️  One or more marketplace fees could not be confirmed — "
+                    "the margin and profit figures below may be OVERSTATED. "
+                    "Verify actual fees before trusting this number."
+                )
+                lines.append("")
+
             selling_price: float = float(margin_result.get("selling_price", 0.0))
             breakdown: list[str] = margin_result.get("calculation_breakdown", [])
             monthly: dict = margin_result.get("monthly_profit_potential", {})

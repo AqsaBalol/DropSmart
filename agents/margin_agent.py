@@ -113,6 +113,7 @@ class MarginAgent(BaseAgent):
 
         # --- Extract all input values ---
         fee_data: dict[str, Any] = self._extract_fee_data(context)
+        fees_incomplete: bool = bool(fee_data.get("missing_fees_detected", False))
         # Currency and symbol are derived from marketplace, not from fee_result,
         # so they are correct even when the fee agent failed and returned no data.
         currency: str = "PKR" if marketplace == "daraz_pk" else "USD"
@@ -183,6 +184,7 @@ class MarginAgent(BaseAgent):
                     ),
                     "currency": currency_str,
                     "supplier_cost_is_assumed": supplier_cost_is_assumed,
+                    "fees_incomplete": fees_incomplete,
                     "monthly_profit_potential": {
                         "50_units": 0.0,
                         "100_units": 0.0,
@@ -328,6 +330,7 @@ class MarginAgent(BaseAgent):
                 "selling_price": selling_price,
                 "supplier_cost": supplier_cost,
                 "supplier_cost_is_assumed": supplier_cost_is_assumed,
+                "fees_incomplete": fees_incomplete,
                 "supplier_shipping_cost": supplier_shipping_cost,
                 "packaging_cost": packaging_cost,
                 "fulfillment_prep_cost": fulfillment_prep_cost,
